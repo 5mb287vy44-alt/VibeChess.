@@ -1,0 +1,47 @@
+name: Build IPA
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate Xcode Project
+        run: |
+          brew install xcodegen
+          cat << 'EOF' > project.yml
+          name: VibeChess
+          options:
+            bundleIdPrefix: com.vibe
+          targets:
+            VibeChess:
+              type: application
+              platform: iOS
+              deploymentTarget: "16.0"
+              sources: [Sources]
+              info:
+                properties:
+                  NSCameraUsageDescription: "Нужна для управления 3D-камерой с помощью лица."
+              settings:
+                CODE_SIGNING_REQUIRED: "NO"
+                CODE_SIGNING_ALLOWED: "NO"
+          EOF
+          xcodegen generate
+
+      - name: Build App
+        run: |
+          xcodebuild -project VibeChess.xcodeproj -scheme VibeChess -configuration Release -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO clean build CONFIGURATION_BUILD_DIR=${{ github.workspace }}/build
+
+      - name: Create IPA
+        run: |
+          mkdir -p Payload
+          mv build/VibeChess.app Payload/
+          zip -r VibeChess.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: VibeChess-App
+          path: VibeChess.ipa
