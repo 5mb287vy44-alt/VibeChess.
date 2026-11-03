@@ -20,13 +20,14 @@ jobs:
               type: application
               platform: iOS
               deploymentTarget: "16.0"
-              sources: [Sources]
-              info:
-                properties:
-                  NSCameraUsageDescription: "Нужна для управления 3D-камерой с помощью лица."
+              sources:
+                - Sources
               settings:
-                CODE_SIGNING_REQUIRED: "NO"
-                CODE_SIGNING_ALLOWED: "NO"
+                base:
+                  INFOPLIST_KEY_NSCameraUsageDescription: "Camera access for head tracking"
+                  GENERATE_INFOPLIST_FILE: YES
+                  CODE_SIGNING_REQUIRED: "NO"
+                  CODE_SIGNING_ALLOWED: "NO"
           EOF
           xcodegen generate
 
