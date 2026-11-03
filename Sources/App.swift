@@ -178,7 +178,6 @@ class GameManager: ObservableObject {
         for c in 0..<8 { pieces.append(PieceModel(type: bb[c], side: .black, col: c, row: 7)) }
     }
     
-    // ИИ Советник
     func askAI(query: String) {
         aiChatMessages.append(("Ты", query))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
@@ -189,21 +188,21 @@ class GameManager: ObservableObject {
                 let playerPieces = self.pieces.filter { $0.side == self.currentTurn }
                 if let p = playerPieces.randomElement(), let m = self.calculateLegalMoves(for: p).randomElement() {
                     let colNames = ["A","B","C","D","E","F","G","H"]
-                    response = "Рекомендую сходить фигурой \(p.type.rawValue) на клетку \(colNames[m.col])\(m.row + 1). Это усилит контроль над центром."
+                    response = "Рекомендую сходить фигурой \(p.type.rawValue) на клетку \(colNames[m.col])\(m.row + 1). Это усилит контроль центра."
                 } else {
-                    response = "Держи оборону, развивай коней и слонов к центру доски."
+                    response = "Держи оборону, развивай коней и слонов к центру."
                 }
             case "Оцени мою позицию":
                 let myScore = self.pieces.filter { $0.side == self.playerSide }.count
                 let botScore = self.pieces.filter { $0.side != self.playerSide }.count
                 let diff = myScore - botScore
-                if diff > 0 { response = "У тебя перевес в +\(diff) фигур! Дави соперника и форсируй размены." }
-                else if diff < 0 { response = "Ты отстаешь на \(abs(diff)) фигур. Играй аккуратно и лови соперника на ошибке." }
-                else { response = "Позиция равная. Контролируй центр и береги короля." }
+                if diff > 0 { response = "У тебя перевес в +\(diff) фигур! Форсируй размены." }
+                else if diff < 0 { response = "Ты отстаешь на \(abs(diff)) фигур. Играй аккуратно." }
+                else { response = "Позиция равная. Контролируй центр доски." }
             case "Дай шулерский совет":
-                response = "Шепотом: если сейчас включишь режим 'Шулер' и прыгнешь ферзем через фигуру — шанс спалиться всего 40%. Рискни, пока судья смотрит в космос!"
+                response = "Шепотом: включи 'Шулер' и сделай прыжок ферзем. Шанс спалиться сейчас всего 40%!"
             default:
-                response = "Анализ завершен. Следи за диагоналями и не отдавай ладью за пешку."
+                response = "Следи за диагоналями и не отдавай тяжелые фигуры."
             }
             self.aiChatMessages.append(("Гроссмейстер AI", response))
             SoundEngine.shared.speak(response, enabled: self.voiceEnabled)
@@ -508,11 +507,9 @@ struct Chess3DContainer: UIViewRepresentable {
         view.antialiasingMode = .multisampling4X
         gameManager.sceneView = view
         
-        // PBR Окружение для отражений на фигурах
         scene.lightingEnvironment.contents = UIColor(white: 0.85, alpha: 1.0)
         scene.lightingEnvironment.intensity = 1.2
         
-        // Звезды
         let stars = SCNNode()
         for _ in 0..<180 {
             let star = SCNSphere(radius: 0.03)
@@ -524,7 +521,6 @@ struct Chess3DContainer: UIViewRepresentable {
         }
         scene.rootNode.addChildNode(stars)
         
-        // Камера
         let orbit = SCNNode(); orbit.name = "orbitNode"
         let camNode = SCNNode(); let cam = SCNCamera()
         cam.bloomIntensity = 1.2; cam.bloomThreshold = 0.5
@@ -534,7 +530,6 @@ struct Chess3DContainer: UIViewRepresentable {
         scene.rootNode.addChildNode(orbit)
         view.pointOfView = camNode
         
-        // Направленный свет и мягкие тени
         let sun = SCNLight(); sun.type = .directional; sun.castsShadow = true
         sun.shadowMode = .deferred; sun.shadowSampleCount = 16
         let sunNode = SCNNode(); sunNode.light = sun; sunNode.position = SCNVector3(7, 16, 7)
@@ -780,7 +775,6 @@ struct ARChessContainer: UIViewRepresentable {
             let tap = UITapGestureRecognizer(target: self, action: #selector(handleARTap(_:)))
             arView.addGestureRecognizer(tap)
             
-            // Прицел для плоскости
             let ring = SCNTorus(ringRadius: 0.4, pipeRadius: 0.02)
             let rMat = SCNMaterial(); rMat.diffuse.contents = UIColor.systemGreen; rMat.emission.contents = UIColor.systemGreen
             ring.materials = [rMat]
@@ -796,7 +790,8 @@ struct ARChessContainer: UIViewRepresentable {
                 return
             }
             let center = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
-            if let hit = arView.raycast(from: center, allowing: .estimatedPlane, alignment: .horizontal).first {
+            if let query = arView.raycastQuery(from: center, allowing: .estimatedPlane, alignment: .horizontal),
+               let hit = arView.session.raycast(query).first {
                 reticleNode?.simdTransform = hit.worldTransform
                 reticleNode?.isHidden = false
             } else {
@@ -808,9 +803,10 @@ struct ARChessContainer: UIViewRepresentable {
             guard let arView = gesture.view as? ARSCNView else { return }
             let loc = gesture.location(in: arView)
             
-            // Если доска еще не поставлена — размещаем ее на столе
+            // Исправленный вызов raycastQuery для размещения доски
             if gameManager.arBoardAnchorNode == nil {
-                if let hit = arView.raycast(from: loc, allowing: .estimatedPlane, alignment: .horizontal).first {
+                if let query = arView.raycastQuery(from: loc, allowing: .estimatedPlane, alignment: .horizontal),
+                   let hit = arView.session.raycast(query).first {
                     let anchorNode = SCNNode()
                     anchorNode.simdTransform = hit.worldTransform
                     anchorNode.scale = SCNVector3(0.12, 0.12, 0.12)
@@ -839,7 +835,6 @@ struct ARChessContainer: UIViewRepresentable {
                 }
             }
             
-            // Ходы в AR
             let hits = arView.hitTest(loc, options: [SCNHitTestOption.searchMode: SCNHitTestSearchMode.all.rawValue])
             if let hit = hits.first(where: { $0.node.name?.starts(with: "piece_") == true || $0.node.parent?.name?.starts(with: "piece_") == true }) {
                 let pNode = hit.node.name?.starts(with: "piece_") == true ? hit.node : hit.node.parent!
@@ -899,7 +894,7 @@ struct MainGameView: View {
                             }
                             Spacer()
                             Button(action: { showAIChat = true }) {
-                                Label("СОВЕТНИК AI", systemImage: "bubble.left.and.bubble.right.fill")
+                                Label("СОВЕТНИК AI", systemImage: "brain.head.profile")
                                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                                     .foregroundColor(.cyan)
                             }
@@ -941,7 +936,6 @@ struct MainGameView: View {
                     .padding(.top, 70)
                 }
             } else {
-                // Игровой HUD
                 VStack {
                     HStack {
                         Button(action: { gm.inMenu = true }) {
@@ -1024,7 +1018,6 @@ struct AIChatModalView: View {
                 
                 Divider()
                 
-                // Кнопки быстрых подсказок
                 VStack(spacing: 8) {
                     HStack {
                         Button("🧠 Какой ход лучший?") { gm.askAI(query: "Какой ход сейчас лучший?") }
@@ -1069,22 +1062,3 @@ struct SavesModalView: View {
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(slot.title).font(.headline)
-                                    Text("Дата: \(slot.dateString) • Фигур: \(slot.pieces.count)")
-                                        .font(.caption).foregroundColor(.secondary)
-                                }
-                                Spacer()
-                                Button("Загрузить") {
-                                    gm.loadFromSlot(slot)
-                                    dismiss()
-                                }
-                                .buttonStyle(.borderedProminent)
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Слоты Сохранений")
-            .navigationBarItems(trailing: Button("Закрыть") { dismiss() })
-        }
-    }
-}
