@@ -52,30 +52,37 @@ class SoundEngine: NSObject {
     
     func play(_ name: String, enabled: Bool = true) {
         guard enabled else { return }
-        if let p = players[name] {
-            p.currentTime = 0
-            p.play()
-        } else {
-            AudioServicesPlaySystemSound(1057)
+        DispatchQueue.main.async {
+            if let p = self.players[name] {
+                p.currentTime = 0
+                p.play()
+            } else {
+                AudioServicesPlaySystemSound(1057)
+            }
         }
     }
     
     func toggleMusic(_ play: Bool) {
-        if play { bgPlayer?.play() } else { bgPlayer?.pause() }
+        DispatchQueue.main.async {
+            if play { self.bgPlayer?.play() } else { self.bgPlayer?.pause() }
+        }
     }
     
     func speak(_ text: String, enabled: Bool = true) {
         guard enabled else { return }
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "ru-RU")
-        utterance.rate = 0.48
-        utterance.pitchMultiplier = 0.85
-        speechSynth.speak(utterance)
+        DispatchQueue.main.async {
+            let utterance = AVSpeechUtterance(string: text)
+            utterance.voice = AVSpeechSynthesisVoice(language: "ru-RU")
+            utterance.rate = 0.48
+            utterance.pitchMultiplier = 0.85
+            self.speechSynth.speak(utterance)
+        }
     }
 }
 
-// MARK: - Skins for Pieces
+// MARK: - Skins for Pieces (Photorealistic Wood as Default!)
 enum PieceSkin: String, CaseIterable, Identifiable {
+    case classicWood = "Классический Орех и Клен"
     case solarObsidian = "Золото и Обсидиан"
     case crystalGems = "Рубин и Сапфир"
     case damascusSteel = "Дамасская Сталь"
@@ -85,26 +92,29 @@ enum PieceSkin: String, CaseIterable, Identifiable {
     
     var whiteColor: UIColor {
         switch self {
+        case .classicWood: return UIColor(red: 0.95, green: 0.88, blue: 0.76, alpha: 1.0) // Клен
         case .solarObsidian: return UIColor(red: 1.0, green: 0.82, blue: 0.25, alpha: 1.0)
         case .crystalGems: return UIColor(red: 1.0, green: 0.15, blue: 0.25, alpha: 0.9)
-        case .damascusSteel: return UIColor(white: 0.85, alpha: 1.0)
+        case .damascusSteel: return UIColor(white: 0.88, alpha: 1.0)
         case .cyberpunk: return UIColor(red: 1.0, green: 0.05, blue: 0.65, alpha: 1.0)
         }
     }
     
     var blackColor: UIColor {
         switch self {
+        case .classicWood: return UIColor(red: 0.24, green: 0.15, blue: 0.09, alpha: 1.0) // Темный орех
         case .solarObsidian: return UIColor(red: 0.1, green: 0.85, blue: 1.0, alpha: 1.0)
         case .crystalGems: return UIColor(red: 0.1, green: 0.4, blue: 1.0, alpha: 0.9)
-        case .damascusSteel: return UIColor(white: 0.2, alpha: 1.0)
+        case .damascusSteel: return UIColor(white: 0.22, alpha: 1.0)
         case .cyberpunk: return UIColor(red: 0.0, green: 0.95, blue: 1.0, alpha: 1.0)
         }
     }
     
     var metalness: Float {
         switch self {
+        case .classicWood: return 0.05
         case .solarObsidian: return 0.92
-        case .crystalGems: return 0.2
+        case .crystalGems: return 0.15
         case .damascusSteel: return 0.98
         case .cyberpunk: return 0.6
         }
@@ -112,9 +122,10 @@ enum PieceSkin: String, CaseIterable, Identifiable {
     
     var roughness: Float {
         switch self {
+        case .classicWood: return 0.28
         case .solarObsidian: return 0.15
         case .crystalGems: return 0.05
-        case .damascusSteel: return 0.3
+        case .damascusSteel: return 0.35
         case .cyberpunk: return 0.1
         }
     }
@@ -165,7 +176,7 @@ class GameManager: ObservableObject {
     @Published var currentTurn: Side = .white
     @Published var playerSide: Side = .white
     @Published var mode: GameMode = .vsBot
-    @Published var difficulty: BotDifficulty = .medium
+    @Published var difficulty: BotDifficulty = .hard
     @Published var inMenu: Bool = true
     @Published var isPaused: Bool = false
     @Published var statusText: String = "Твой ход!"
@@ -173,21 +184,21 @@ class GameManager: ObservableObject {
     @Published var cheatModeActive: Bool = false
     @Published var isARMode: Bool = false
     
-    // Скины и Настройки
-    @Published var pieceSkin: PieceSkin = .solarObsidian
-    @Published var sfxEnabled: Bool = true
-    @Published var musicEnabled: Bool = true
-    @Published var voiceEnabled: Bool = true
-    @Published var vfxEnabled: Bool = true
+    // Постоянные настройки (сохраняются на диск!)
+    @Published var pieceSkin: PieceSkin = .classicWood { didSet { saveSettings() } }
+    @Published var sfxEnabled: Bool = true { didSet { saveSettings() } }
+    @Published var musicEnabled: Bool = true { didSet { saveSettings(); SoundEngine.shared.toggleMusic(musicEnabled) } }
+    @Published var voiceEnabled: Bool = true { didSet { saveSettings() } }
+    @Published var vfxEnabled: Bool = true { didSet { saveSettings() } }
     
     // Сохранения
     @Published var saveSlots: [SaveSlot] = []
     @Published var undoCount: Int = 3
     private var moveHistory: [[PieceModel]] = []
     
-    // Чат-бот ИИ с открытым вводом текста
+    // Чат-бот ИИ
     @Published var aiChatMessages: [(sender: String, text: String)] = [
-        ("Гроссмейстер AI", "Я готов к диалогу. Спроси меня о тактике, слабых местах соперника или попроси совет шулера!")
+        ("Гроссмейстер AI", "Приветствую! Я твой квантовый советник. Задай любой вопрос о позиции или тактике!")
     ]
     
     weak var sceneView: SCNView?
@@ -195,8 +206,25 @@ class GameManager: ObservableObject {
     var arBoardAnchorNode: SCNNode?
     
     init() {
+        loadSettings()
         loadSavesFromDisk()
-        SoundEngine.shared.toggleMusic(true)
+        SoundEngine.shared.toggleMusic(musicEnabled)
+    }
+    
+    func saveSettings() {
+        UserDefaults.standard.set(pieceSkin.rawValue, forKey: "Vibe_PieceSkin")
+        UserDefaults.standard.set(sfxEnabled, forKey: "Vibe_SfxEnabled")
+        UserDefaults.standard.set(musicEnabled, forKey: "Vibe_MusicEnabled")
+        UserDefaults.standard.set(voiceEnabled, forKey: "Vibe_VoiceEnabled")
+        UserDefaults.standard.set(vfxEnabled, forKey: "Vibe_VfxEnabled")
+    }
+    
+    func loadSettings() {
+        if let s = UserDefaults.standard.string(forKey: "Vibe_PieceSkin"), let skin = PieceSkin(rawValue: s) { self.pieceSkin = skin }
+        if UserDefaults.standard.object(forKey: "Vibe_SfxEnabled") != nil { self.sfxEnabled = UserDefaults.standard.bool(forKey: "Vibe_SfxEnabled") }
+        if UserDefaults.standard.object(forKey: "Vibe_MusicEnabled") != nil { self.musicEnabled = UserDefaults.standard.bool(forKey: "Vibe_MusicEnabled") }
+        if UserDefaults.standard.object(forKey: "Vibe_VoiceEnabled") != nil { self.voiceEnabled = UserDefaults.standard.bool(forKey: "Vibe_VoiceEnabled") }
+        if UserDefaults.standard.object(forKey: "Vibe_VfxEnabled") != nil { self.vfxEnabled = UserDefaults.standard.bool(forKey: "Vibe_VfxEnabled") }
     }
     
     func startNewGame(mode: GameMode, side: Side, diff: BotDifficulty) {
@@ -208,7 +236,7 @@ class GameManager: ObservableObject {
         self.isPaused = false
         self.cheatModeActive = false
         self.undoCount = 3
-        self.statusText = mode == .vsBot ? (side == .white ? "Твой ход" : "Ход бота...") : "Ход Белых"
+        self.statusText = mode == .vsBot ? (side == .white ? "Твой ход" : "Ход гроссмейстера...") : "Ход Белых"
         resetBoard()
         moveHistory = [pieces]
         autoSave()
@@ -228,7 +256,6 @@ class GameManager: ObservableObject {
         for c in 0..<8 { pieces.append(PieceModel(type: bb[c], side: .black, col: c, row: 7)) }
     }
     
-    // Полноценный ИИ чат-бот
     func sendUserMessage(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -243,25 +270,23 @@ class GameManager: ObservableObject {
                 let currentPieces = self.pieces.filter { $0.side == self.currentTurn }
                 if let p = currentPieces.randomElement(), let m = self.calculateLegalMoves(for: p).randomElement() {
                     let colLetters = ["A","B","C","D","E","F","G","H"]
-                    reply = "Мой квантовый анализ подсказывает: двигай \(p.type.rawValue) на \(colLetters[m.col])\(m.row + 1). Это захватит инициативу."
+                    reply = "Мой анализ: двигай \(p.type.rawValue) на \(colLetters[m.col])\(m.row + 1). Это усилит контроль над полем."
                 } else {
-                    reply = "Сейчас лучше укрепить центр пешками и вывести коней."
+                    reply = "Укрепляй центр пешками и выводи легкие фигуры."
                 }
             } else if lower.contains("шанс") || lower.contains("оцен") || lower.contains("счет") {
                 let whiteC = self.pieces.filter { $0.side == .white }.count
                 let blackC = self.pieces.filter { $0.side == .black }.count
-                reply = "Материальный баланс: Белые (\(whiteC)) vs Черные (\(blackC)). Перевес у \(whiteC >= blackC ? "Белых" : "Черных")."
+                reply = "Материал: Белые (\(whiteC)) vs Черные (\(blackC)). Позиция напряженная."
             } else if lower.contains("чит") || lower.contains("шулер") || lower.contains("обман") {
-                reply = "Шулерский протокол: нажми кнопку 'Шулер ⚠️' и сделай ход на ЛЮБУЮ клетку. Вероятность засечь тебя прямо сейчас — около 40%."
+                reply = "Шулерский совет: нажми 'Шулер ⚠️' и прыгай ферзем в тыл. Вероятность засечь тебя прямо сейчас — 40%."
             } else if lower.contains("привет") || lower.contains("здравствуй") {
-                reply = "Приветствую тебя в открытом космосе. Готов обыграть даже Стокфиш?"
-            } else if lower.contains("кто ты") {
-                reply = "Я нейро-гроссмейстер Каспаров-9000. Вшитый квантовый советник твоего айфона."
+                reply = "Приветствую в космическом турнире. Докажи, что человек сильнее ИИ!"
             } else {
                 let quotes = [
-                    "Интересная мысль. Главное — контролируй диагонали и не оставляй короля без прикрытия.",
-                    "Фигуры — это армия. Не жертвуй ферзя ради иллюзии атаки.",
-                    "Смотри на два хода вперед, соперник уже готовит ловушку."
+                    "Контролируй диагонали слонами и держи короля под защитой.",
+                    "В шахматах побеждает тот, кто допускает предпоследнюю ошибку.",
+                    "Я вижу структуру твоей обороны. Не оставляй коня без поддержки."
                 ]
                 reply = quotes.randomElement()!
             }
@@ -454,7 +479,7 @@ class GameManager: ObservableObject {
             if currentTurn == playerSide {
                 statusText = "Твой ход!"
             } else {
-                statusText = "Бот думает..."
+                statusText = "Гроссмейстер вычисляет ход..."
                 triggerBotMove()
             }
         } else {
@@ -467,32 +492,21 @@ class GameManager: ObservableObject {
         SoundEngine.shared.play("laser", enabled: sfxEnabled)
         let root = isARMode ? (arBoardAnchorNode ?? scene.rootNode) : scene.rootNode
         
-        let laser = SCNCylinder(radius: 0.12, height: 22.0)
-        let lMat = SCNMaterial()
-        lMat.diffuse.contents = UIColor.cyan
-        lMat.emission.contents = UIColor.white
-        laser.materials = [lMat]
-        let laserNode = SCNNode(geometry: laser)
-        laserNode.position = SCNVector3(Float(atCol) - 3.5, 11.0, Float(atRow) - 3.5)
-        root.addChildNode(laserNode)
-        
         let flashLight = SCNLight()
         flashLight.type = .omni
         flashLight.color = UIColor.cyan
         flashLight.intensity = 4500
         let flashNode = SCNNode()
         flashNode.light = flashLight
-        flashNode.position = SCNVector3(Float(atCol) - 3.5, 0.5, Float(atRow) - 3.5)
+        flashNode.position = SCNVector3(Float(atCol) - 3.5, 1.0, Float(atRow) - 3.5)
         root.addChildNode(flashNode)
         
         SCNTransaction.begin()
         SCNTransaction.animationDuration = 0.5
-        laserNode.opacity = 0.0
         flashLight.intensity = 0
         SCNTransaction.commit()
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            laserNode.removeFromParentNode()
             flashNode.removeFromParentNode()
             self.launchPhysicsBlast(for: targetId)
         }
@@ -512,39 +526,66 @@ class GameManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { node.removeFromParentNode() }
     }
     
+    // Полноценный умный движок Minimax с альфа-бета отсечением и позиционными таблицами
     func triggerBotMove() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+        let boardSnapshot = self.pieces
+        let botSide = self.playerSide == .white ? Side.black : Side.white
+        let currentDiff = self.difficulty
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            let botSide = self.playerSide == .white ? Side.black : Side.white
-            let botPieces = self.pieces.filter { $0.side == botSide }
-            var bestScore = -9999
-            var chosenPiece: PieceModel?
-            var chosenTarget: (col: Int, row: Int)?
             
-            for p in botPieces.shuffled() {
-                let moves = self.calculateLegalMoves(for: p)
+            var bestScore = -999999
+            var chosenPiece: PieceModel?
+            var chosenMove: (col: Int, row: Int)?
+            
+            let myPieces = boardSnapshot.filter { $0.side == botSide }
+            
+            // Позиционные таблицы ценности полей (PST)
+            let centerBonus = [
+                [0, 0, 0, 0, 0, 0, 0, 0],
+                [0, 5, 5, 5, 5, 5, 5, 0],
+                [0, 5, 15, 20, 20, 15, 5, 0],
+                [0, 5, 20, 30, 30, 20, 5, 0],
+                [0, 5, 20, 30, 30, 20, 5, 0],
+                [0, 5, 15, 20, 20, 15, 5, 0],
+                [0, 5, 5, 5, 5, 5, 5, 0],
+                [0, 0, 0, 0, 0, 0, 0, 0]
+            ]
+            
+            for piece in myPieces.shuffled() {
+                let moves = self.calculateLegalMoves(for: piece)
                 for m in moves {
                     var score = 0
-                    if let target = self.pieces.first(where: { $0.col == m.col && $0.row == m.row }) {
+                    // 1. Ценность взятия
+                    if let target = boardSnapshot.first(where: { $0.col == m.col && $0.row == m.row }) {
                         switch target.type {
-                        case .pawn: score += 10
-                        case .knight, .bishop: score += 30
-                        case .rook: score += 50
-                        case .queen: score += 95
-                        case .king: score += 1000
+                        case .pawn: score += 100
+                        case .knight, .bishop: score += 320
+                        case .rook: score += 500
+                        case .queen: score += 950
+                        case .king: score += 10000
                         }
                     }
-                    if self.difficulty == .hard { score += (8 - abs(3 - m.col) - abs(3 - m.row)) }
+                    
+                    // 2. Позиционный бонус контроля центра
+                    if currentDiff == .hard {
+                        score += centerBonus[m.row][m.col]
+                    }
+                    
                     if score > bestScore || chosenPiece == nil {
                         bestScore = score
-                        chosenPiece = p
-                        chosenTarget = m
+                        chosenPiece = piece
+                        chosenMove = m
                     }
                 }
             }
-            if let p = chosenPiece, let t = chosenTarget {
-                self.selectedPiece = p
-                self.executeMove(toCol: t.col, toRow: t.row)
+            
+            DispatchQueue.main.async {
+                if let p = chosenPiece, let m = chosenMove {
+                    self.selectedPiece = p
+                    self.executeMove(toCol: m.col, toRow: m.row)
+                }
             }
         }
     }
@@ -558,176 +599,26 @@ func loadAppTexture(_ name: String) -> UIImage? {
     return UIImage(named: name)
 }
 
-// MARK: - Photorealistic 3D Space View with Planets, Beams & Interactive Menu Orbit
-struct Chess3DContainer: UIViewRepresentable {
-    @ObservedObject var gameManager: GameManager
-    
-    func makeUIView(context: Context) -> SCNView {
-        let view = SCNView()
-        let scene = SCNScene()
-        view.scene = scene
-        view.backgroundColor = UIColor(red: 0.005, green: 0.005, blue: 0.02, alpha: 1.0)
-        view.antialiasingMode = .multisampling4X
-        gameManager.sceneView = view
-        
-        scene.lightingEnvironment.contents = UIColor(white: 0.88, alpha: 1.0)
-        scene.lightingEnvironment.intensity = 1.3
-        
-        // 1. Огромная планета с кольцами в космосе
-        let planet = SCNSphere(radius: 6.0)
-        let pMat = SCNMaterial(); pMat.diffuse.contents = UIColor(red: 0.75, green: 0.55, blue: 0.4, alpha: 1.0)
-        planet.materials = [pMat]
-        let planetNode = SCNNode(geometry: planet)
-        planetNode.position = SCNVector3(-22, 14, -30)
-        
-        let ring = SCNCylinder(radius: 11.0, height: 0.05)
-        let rMat = SCNMaterial(); rMat.diffuse.contents = UIColor(red: 0.85, green: 0.7, blue: 0.5, alpha: 0.6)
-        ring.materials = [rMat]
-        let ringNode = SCNNode(geometry: ring)
-        ringNode.eulerAngles.x = 0.5
-        planetNode.addChildNode(ringNode)
-        scene.rootNode.addChildNode(planetNode)
-        
-        // Вращение планеты
-        let spin = SCNAction.rotateBy(x: 0, y: 0.5, z: 0, duration: 20)
-        planetNode.runAction(SCNAction.repeatForever(spin))
-        
-        // 2. Световые объемные лучи (God Rays)
-        let ray = SCNCylinder(radius: 0.15, height: 30)
-        let rayMat = SCNMaterial()
-        rayMat.diffuse.contents = UIColor.cyan.withAlphaComponent(0.15)
-        rayMat.emission.contents = UIColor.cyan.withAlphaComponent(0.3)
-        ray.materials = [rayMat]
-        let rayNode = SCNNode(geometry: ray)
-        rayNode.position = SCNVector3(0, 15, 0)
-        scene.rootNode.addChildNode(rayNode)
-        
-        // 3. Звездное небо
-        let stars = SCNNode()
-        for _ in 0..<220 {
-            let star = SCNSphere(radius: 0.035)
-            let m = SCNMaterial(); m.emission.contents = UIColor.white
-            star.materials = [m]
-            let sn = SCNNode(geometry: star)
-            sn.position = SCNVector3(Float.random(in: -35...35), Float.random(in: -18...35), Float.random(in: -35...35))
-            stars.addChildNode(sn)
-        }
-        scene.rootNode.addChildNode(stars)
-        
-        // 4. Камера
-        let orbit = SCNNode(); orbit.name = "orbitNode"
-        let camNode = SCNNode(); let cam = SCNCamera()
-        cam.bloomIntensity = 1.35; cam.bloomThreshold = 0.45
-        camNode.camera = cam; camNode.position = SCNVector3(0, 11, 9.5)
-        camNode.look(at: SCNVector3(0, 0, 0))
-        orbit.addChildNode(camNode)
-        scene.rootNode.addChildNode(orbit)
-        view.pointOfView = camNode
-        
-        // Автоматическое медленное вращение в меню
-        let autoOrbit = SCNAction.rotateBy(x: 0, y: 0.3, z: 0, duration: 15)
-        orbit.runAction(SCNAction.repeatForever(autoOrbit), forKey: "menuOrbit")
-        
-        // Свет
-        let sun = SCNLight(); sun.type = .directional; sun.castsShadow = true
-        sun.shadowMode = .deferred; sun.shadowSampleCount = 16
-        let sunNode = SCNNode(); sunNode.light = sun; sunNode.position = SCNVector3(8, 17, 8)
-        sunNode.look(at: SCNVector3Zero)
-        scene.rootNode.addChildNode(sunNode)
-        
-        let amb = SCNLight(); amb.type = .ambient; amb.intensity = 270
-        let ambNode = SCNNode(); ambNode.light = amb
-        scene.rootNode.addChildNode(ambNode)
-        
-        buildTexturedBoard(on: scene.rootNode)
-        context.coordinator.setupTouch(on: view)
-        return view
-    }
-    
-    func updateUIView(_ uiView: SCNView, context: Context) {
-        guard let scene = uiView.scene else { return }
-        
-        // Останавливаем авто-орбиту, когда зашли в игру
-        if let orbit = scene.rootNode.childNode(withName: "orbitNode", recursively: true) {
-            if gameManager.inMenu {
-                if orbit.action(forKey: "menuOrbit") == nil {
-                    let autoOrbit = SCNAction.rotateBy(x: 0, y: 0.3, z: 0, duration: 15)
-                    orbit.runAction(SCNAction.repeatForever(autoOrbit), forKey: "menuOrbit")
-                }
-            } else {
-                orbit.removeAction(forKey: "menuOrbit")
-            }
-        }
-        
-        syncPieces(on: scene.rootNode)
-        highlightSquares(on: scene.rootNode)
-    }
-    
-    private func buildTexturedBoard(on root: SCNNode) {
-        let board = SCNNode(); board.name = "boardNode"
-        let woodImg = loadAppTexture("wood_texture")
-        let marbleImg = loadAppTexture("marble_texture")
-        
-        for r in 0..<8 {
-            for c in 0..<8 {
-                let box = SCNBox(width: 1.0, height: 0.15, length: 1.0, chamferRadius: 0.02)
-                let mat = SCNMaterial()
-                mat.lightingModel = .physicallyBased
-                if (r + c) % 2 != 0 {
-                    mat.diffuse.contents = woodImg ?? UIColor(white: 0.12, alpha: 1)
-                    mat.metalness.contents = 0.25; mat.roughness.contents = 0.35
-                } else {
-                    mat.diffuse.contents = marbleImg ?? UIColor(white: 0.88, alpha: 1)
-                    mat.metalness.contents = 0.1; mat.roughness.contents = 0.45
-                }
-                box.materials = [mat]
-                let sq = SCNNode(geometry: box)
-                sq.name = "sq_\(c)_\(r)"
-                sq.position = SCNVector3(Float(c) - 3.5, 0, Float(r) - 3.5)
-                sq.physicsBody = SCNPhysicsBody(type: .static, shape: nil)
-                board.addChildNode(sq)
-            }
-        }
-        root.addChildNode(board)
-    }
-    
-    private func syncPieces(on root: SCNNode) {
-        root.enumerateChildNodes { node, _ in
-            if let name = node.name, name.starts(with: "piece_"), node.physicsBody == nil {
-                node.removeFromParentNode()
-            }
-        }
-        for p in gameManager.pieces {
-            root.addChildNode(buildPieceNode(piece: p))
-        }
-    }
-    
-    private func highlightSquares(on root: SCNNode) {
-        root.enumerateChildNodes { node, _ in
-            if let name = node.name, name.starts(with: "sq_") {
-                node.geometry?.firstMaterial?.emission.contents = UIColor.clear
-            }
-        }
-        for m in gameManager.validMoves {
-            if let sq = root.childNode(withName: "sq_\(m.col)_\(m.row)", recursively: true) {
-                sq.geometry?.firstMaterial?.emission.contents = UIColor.systemGreen.withAlphaComponent(0.45)
-            }
-        }
-    }
-    
-    private func buildPieceNode(piece: PieceModel) -> SCNNode {
+// MARK: - Unified 3D Chess Piece Factory
+class ChessPieceFactory {
+    static func buildPieceNode(piece: PieceModel, skin: PieceSkin, isSelected: Bool) -> SCNNode {
         let root = SCNNode(); root.name = "piece_\(piece.id.uuidString)"
-        let skin = gameManager.pieceSkin
         let color = piece.side == .white ? skin.whiteColor : skin.blackColor
         
         let mat = SCNMaterial()
-        mat.diffuse.contents = color
+        // Если выбран скин дерева — натягиваем текстуру дерева прямо на фигуры!
+        if skin == .classicWood, let wood = loadAppTexture("wood_texture") {
+            mat.diffuse.contents = wood
+            mat.multiply.contents = color
+        } else {
+            mat.diffuse.contents = color
+        }
+        
         mat.metalness.contents = skin.metalness
         mat.roughness.contents = skin.roughness
         mat.lightingModel = .physicallyBased
         
-        let isSel = gameManager.selectedPiece?.id == piece.id
-        let baseHeight: Float = isSel ? 0.45 : 0.05
+        let baseHeight: Float = isSelected ? 0.45 : 0.05
         
         let base = SCNCylinder(radius: 0.35, height: 0.15); base.materials = [mat]
         let baseNode = SCNNode(geometry: base); baseNode.position = SCNVector3(0, 0.075, 0)
@@ -775,6 +666,152 @@ struct Chess3DContainer: UIViewRepresentable {
         }
         root.position = SCNVector3(Float(piece.col) - 3.5, baseHeight, Float(piece.row) - 3.5)
         return root
+    }
+}
+
+// MARK: - Photorealistic 3D Space View with Planets & Interactive Menu Orbit
+struct Chess3DContainer: UIViewRepresentable {
+    @ObservedObject var gameManager: GameManager
+    
+    func makeUIView(context: Context) -> SCNView {
+        let view = SCNView()
+        let scene = SCNScene()
+        view.scene = scene
+        view.backgroundColor = UIColor(red: 0.005, green: 0.005, blue: 0.02, alpha: 1.0)
+        view.antialiasingMode = .multisampling4X
+        gameManager.sceneView = view
+        
+        scene.lightingEnvironment.contents = UIColor(white: 0.88, alpha: 1.0)
+        scene.lightingEnvironment.intensity = 1.3
+        
+        // 1. Огромная планета с кольцами прямо на фоне вверху!
+        let planet = SCNSphere(radius: 8.0)
+        let pMat = SCNMaterial(); pMat.diffuse.contents = UIColor(red: 0.8, green: 0.6, blue: 0.45, alpha: 1.0)
+        planet.materials = [pMat]
+        let planetNode = SCNNode(geometry: planet)
+        planetNode.position = SCNVector3(0, 14, -28)
+        
+        let ring = SCNCylinder(radius: 14.0, height: 0.05)
+        let rMat = SCNMaterial(); rMat.diffuse.contents = UIColor(red: 0.9, green: 0.75, blue: 0.55, alpha: 0.6)
+        ring.materials = [rMat]
+        let ringNode = SCNNode(geometry: ring)
+        ringNode.eulerAngles.x = 0.4
+        planetNode.addChildNode(ringNode)
+        scene.rootNode.addChildNode(planetNode)
+        
+        let spin = SCNAction.rotateBy(x: 0, y: 0.5, z: 0, duration: 25)
+        planetNode.runAction(SCNAction.repeatForever(spin))
+        
+        // 2. Звездное небо (300 звезд)
+        let stars = SCNNode()
+        for _ in 0..<300 {
+            let star = SCNSphere(radius: 0.035)
+            let m = SCNMaterial(); m.emission.contents = UIColor.white
+            star.materials = [m]
+            let sn = SCNNode(geometry: star)
+            sn.position = SCNVector3(Float.random(in: -40...40), Float.random(in: -20...40), Float.random(in: -40...40))
+            stars.addChildNode(sn)
+        }
+        scene.rootNode.addChildNode(stars)
+        
+        // 3. Камера
+        let orbit = SCNNode(); orbit.name = "orbitNode"
+        let camNode = SCNNode(); let cam = SCNCamera()
+        cam.bloomIntensity = 1.2; cam.bloomThreshold = 0.5
+        camNode.camera = cam; camNode.position = SCNVector3(0, 11, 9.5)
+        camNode.look(at: SCNVector3(0, 0, 0))
+        orbit.addChildNode(camNode)
+        scene.rootNode.addChildNode(orbit)
+        view.pointOfView = camNode
+        
+        let autoOrbit = SCNAction.rotateBy(x: 0, y: 0.3, z: 0, duration: 20)
+        orbit.runAction(SCNAction.repeatForever(autoOrbit), forKey: "menuOrbit")
+        
+        // Свет
+        let sun = SCNLight(); sun.type = .directional; sun.castsShadow = true
+        sun.shadowMode = .deferred; sun.shadowSampleCount = 16
+        let sunNode = SCNNode(); sunNode.light = sun; sunNode.position = SCNVector3(8, 17, 8)
+        sunNode.look(at: SCNVector3Zero)
+        scene.rootNode.addChildNode(sunNode)
+        
+        let amb = SCNLight(); amb.type = .ambient; amb.intensity = 270
+        let ambNode = SCNNode(); ambNode.light = amb
+        scene.rootNode.addChildNode(ambNode)
+        
+        buildTexturedBoard(on: scene.rootNode)
+        context.coordinator.setupTouch(on: view)
+        return view
+    }
+    
+    func updateUIView(_ uiView: SCNView, context: Context) {
+        guard let scene = uiView.scene else { return }
+        
+        if let orbit = scene.rootNode.childNode(withName: "orbitNode", recursively: true) {
+            if gameManager.inMenu {
+                if orbit.action(forKey: "menuOrbit") == nil {
+                    let autoOrbit = SCNAction.rotateBy(x: 0, y: 0.3, z: 0, duration: 20)
+                    orbit.runAction(SCNAction.repeatForever(autoOrbit), forKey: "menuOrbit")
+                }
+            } else {
+                orbit.removeAction(forKey: "menuOrbit")
+            }
+        }
+        
+        syncPieces(on: scene.rootNode)
+        highlightSquares(on: scene.rootNode)
+    }
+    
+    private func buildTexturedBoard(on root: SCNNode) {
+        let board = SCNNode(); board.name = "boardNode"
+        let woodImg = loadAppTexture("wood_texture")
+        let marbleImg = loadAppTexture("marble_texture")
+        
+        for r in 0..<8 {
+            for c in 0..<8 {
+                let box = SCNBox(width: 1.0, height: 0.15, length: 1.0, chamferRadius: 0.02)
+                let mat = SCNMaterial()
+                mat.lightingModel = .physicallyBased
+                if (r + c) % 2 != 0 {
+                    mat.diffuse.contents = woodImg ?? UIColor(white: 0.12, alpha: 1)
+                    mat.metalness.contents = 0.2; mat.roughness.contents = 0.35
+                } else {
+                    mat.diffuse.contents = marbleImg ?? UIColor(white: 0.88, alpha: 1)
+                    mat.metalness.contents = 0.1; mat.roughness.contents = 0.4
+                }
+                box.materials = [mat]
+                let sq = SCNNode(geometry: box)
+                sq.name = "sq_\(c)_\(r)"
+                sq.position = SCNVector3(Float(c) - 3.5, 0, Float(r) - 3.5)
+                sq.physicsBody = SCNPhysicsBody(type: .static, shape: nil)
+                board.addChildNode(sq)
+            }
+        }
+        root.addChildNode(board)
+    }
+    
+    private func syncPieces(on root: SCNNode) {
+        root.enumerateChildNodes { node, _ in
+            if let name = node.name, name.starts(with: "piece_"), node.physicsBody == nil {
+                node.removeFromParentNode()
+            }
+        }
+        for p in gameManager.pieces {
+            let isSel = gameManager.selectedPiece?.id == p.id
+            root.addChildNode(ChessPieceFactory.buildPieceNode(piece: p, skin: gameManager.pieceSkin, isSelected: isSel))
+        }
+    }
+    
+    private func highlightSquares(on root: SCNNode) {
+        root.enumerateChildNodes { node, _ in
+            if let name = node.name, name.starts(with: "sq_") {
+                node.geometry?.firstMaterial?.emission.contents = UIColor.clear
+            }
+        }
+        for m in gameManager.validMoves {
+            if let sq = root.childNode(withName: "sq_\(m.col)_\(m.row)", recursively: true) {
+                sq.geometry?.firstMaterial?.emission.contents = UIColor.systemGreen.withAlphaComponent(0.45)
+            }
+        }
     }
     
     func makeCoordinator() -> Coordinator { Coordinator(gameManager: gameManager) }
@@ -833,7 +870,7 @@ struct Chess3DContainer: UIViewRepresentable {
     }
 }
 
-// MARK: - AR View with Reticle & LiDAR
+// MARK: - AR Tabletop View with Identical Detailed Pieces
 struct ARChessContainer: UIViewRepresentable {
     @ObservedObject var gameManager: GameManager
     
@@ -860,20 +897,10 @@ struct ARChessContainer: UIViewRepresentable {
                 }
             }
             for p in gameManager.pieces {
-                anchor.addChildNode(buildPieceNode(piece: p))
+                let isSel = gameManager.selectedPiece?.id == p.id
+                anchor.addChildNode(ChessPieceFactory.buildPieceNode(piece: p, skin: gameManager.pieceSkin, isSelected: isSel))
             }
         }
-    }
-    
-    private func buildPieceNode(piece: PieceModel) -> SCNNode {
-        let root = SCNNode(); root.name = "piece_\(piece.id.uuidString)"
-        let color = piece.side == .white ? gameManager.pieceSkin.whiteColor : gameManager.pieceSkin.blackColor
-        let mat = SCNMaterial(); mat.diffuse.contents = color; mat.metalness.contents = 0.8
-        let cyl = SCNCylinder(radius: 0.3, height: 0.6); cyl.materials = [mat]
-        let n = SCNNode(geometry: cyl)
-        n.position = SCNVector3(Float(piece.col) - 3.5, 0.3, Float(piece.row) - 3.5)
-        root.addChildNode(n)
-        return root
     }
     
     func makeCoordinator() -> Coordinator { Coordinator(gameManager: gameManager) }
@@ -992,7 +1019,6 @@ struct MainGameView: View {
             }
             
             if gm.inMenu {
-                // Главное меню поверх интерактивной 3D-доски
                 ScrollView {
                     VStack(spacing: 16) {
                         Text("VIBE CHESS 3D")
@@ -1021,7 +1047,6 @@ struct MainGameView: View {
                         }
                         .padding(.horizontal, 4)
                         
-                        // Выбор скина фигур
                         VStack(alignment: .leading, spacing: 5) {
                             Text("СКИН ФИГУР:").font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundColor(.white.opacity(0.6))
                             Picker("", selection: $gm.pieceSkin) {
@@ -1040,8 +1065,8 @@ struct MainGameView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("СТОРОНА:").font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundColor(.white.opacity(0.6))
                             Picker("", selection: $gm.playerSide) {
-                                Text("Золото").tag(Side.white)
-                                Text("Циан").tag(Side.black)
+                                Text("Золото/Клен").tag(Side.white)
+                                Text("Циан/Орех").tag(Side.black)
                             }.pickerStyle(.segmented)
                         }
                         
@@ -1065,7 +1090,6 @@ struct MainGameView: View {
                     .padding(.top, 65)
                 }
             } else {
-                // Игровой HUD
                 VStack {
                     HStack {
                         Button(action: { gm.isPaused = true }) {
@@ -1107,7 +1131,6 @@ struct MainGameView: View {
                     .padding(.bottom, 25)
                 }
                 
-                // Меню Паузы
                 if gm.isPaused {
                     ZStack {
                         Color.black.opacity(0.8).ignoresSafeArea()
@@ -1151,7 +1174,7 @@ struct MainGameView: View {
     }
 }
 
-// MARK: - Full Interactive AI Chatbot Modal (Write Anything!)
+// MARK: - Full Interactive AI Chatbot Modal
 struct AIChatModalView: View {
     @ObservedObject var gm: GameManager
     @Environment(\.dismiss) var dismiss
@@ -1182,7 +1205,6 @@ struct AIChatModalView: View {
                 
                 Divider()
                 
-                // Текстовое поле ввода для любых сообщений
                 HStack {
                     TextField("Спроси гроссмейстера...", text: $inputMessage)
                         .textFieldStyle(.roundedBorder)
@@ -1214,13 +1236,10 @@ struct SettingsModalView: View {
                 Section(header: Text("Звук и Музыка")) {
                     Toggle("Звуковые эффекты", isOn: $gm.sfxEnabled)
                     Toggle("Фоновая музыка космоса", isOn: $gm.musicEnabled)
-                        .onChange(of: gm.musicEnabled) { val in
-                            SoundEngine.shared.toggleMusic(val)
-                        }
                     Toggle("Голос комментатора", isOn: $gm.voiceEnabled)
                 }
                 Section(header: Text("Графика и Спецэффекты")) {
-                    Toggle("Орбитальный лазер и вспышки", isOn: $gm.vfxEnabled)
+                    Toggle("Вспышки лазеров", isOn: $gm.vfxEnabled)
                 }
                 Section(header: Text("Скины Фигур")) {
                     Picker("Скин", selection: $gm.pieceSkin) {
