@@ -15,7 +15,7 @@ jobs:
 
       - name: Generate Heavy Audio Pack (75MB+)
         run: |
-          mkdir -p Sources/Resources
+          mkdir -p Resources
           python3 - << 'EOF'
           import wave, struct, math, random
 
@@ -35,46 +35,46 @@ jobs:
                       frames.extend(struct.pack('<hh', l, r))
                   w.writeframes(frames)
 
-          # 1. Тяжелый 4-минутный космический эмбиент (~42 МБ)
+          # 1. Космический эмбиент саундтрек (~42 МБ)
           def ambient_gen(t, i):
               base = math.sin(2 * math.pi * 55.0 * t) * 0.3
               fifth = math.sin(2 * math.pi * 82.4 * t + 0.5) * 0.2
               shimmer = math.sin(2 * math.pi * 220.0 * t) * 0.1
               lfo = (math.sin(t * 0.2) + 1.0) * 0.5
               return base * lfo, fifth * lfo
-          create_wav("Sources/Resources/ambient.wav", 240.0, ambient_gen)
+          create_wav("Resources/ambient.wav", 240.0, ambient_gen)
 
-          # 2. Второй космический трек для веса 75+ МБ (~35 МБ)
+          # 2. Второй трек глубокого космоса для веса (~35 МБ)
           def ambient2_gen(t, i):
               drone = math.sin(2 * math.pi * 65.4 * t) * 0.25
               sub = math.sin(2 * math.pi * 32.7 * t) * 0.3
               return drone, sub
-          create_wav("Sources/Resources/space_deep.wav", 200.0, ambient2_gen)
+          create_wav("Resources/space_deep.wav", 200.0, ambient2_gen)
 
-          # 3. Звуковые эффекты
+          # 3. Звуковые эффекты игры
           def move_gen(t, i):
               decay = math.exp(-t * 28.0)
               val = math.sin(2 * math.pi * 140.0 * t) * decay * 0.8
               return val, val
-          create_wav("Sources/Resources/move.wav", 0.35, move_gen)
+          create_wav("Resources/move.wav", 0.35, move_gen)
 
           def capture_gen(t, i):
               decay = math.exp(-t * 14.0)
               val = (math.sin(2 * math.pi * 85.0 * t) + (random.random() * 2.0 - 1.0) * 0.3) * decay
               return val, val
-          create_wav("Sources/Resources/capture.wav", 0.6, capture_gen)
+          create_wav("Resources/capture.wav", 0.6, capture_gen)
 
           def select_gen(t, i):
               decay = math.exp(-t * 50.0)
               val = math.sin(2 * math.pi * 880.0 * t) * decay * 0.6
               return val, val
-          create_wav("Sources/Resources/select.wav", 0.12, select_gen)
+          create_wav("Resources/select.wav", 0.12, select_gen)
 
           def alarm_gen(t, i):
               freq = 950.0 if int(t * 8) % 2 == 0 else 600.0
               val = math.sin(2 * math.pi * freq * t) * 0.7
               return val, val
-          create_wav("Sources/Resources/alarm.wav", 1.2, alarm_gen)
+          create_wav("Resources/alarm.wav", 1.2, alarm_gen)
           EOF
 
       - name: Generate Xcode Project
@@ -91,12 +91,13 @@ jobs:
               deploymentTarget: "16.0"
               sources:
                 - Sources
+              resources:
+                - Resources
               settings:
                 base:
                   GENERATE_INFOPLIST_FILE: YES
                   CODE_SIGNING_REQUIRED: "NO"
                   CODE_SIGNING_ALLOWED: "NO"
-                  OTHER_LDFLAGS: "-framework AVFoundation -framework AudioToolbox -framework SceneKit -framework UIKit"
           EOF
           xcodegen generate
           sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' VibeChess.xcodeproj/project.pbxproj
