@@ -803,7 +803,6 @@ struct ARChessContainer: UIViewRepresentable {
             guard let arView = gesture.view as? ARSCNView else { return }
             let loc = gesture.location(in: arView)
             
-            // Исправленный вызов raycastQuery для размещения доски
             if gameManager.arBoardAnchorNode == nil {
                 if let query = arView.raycastQuery(from: loc, allowing: .estimatedPlane, alignment: .horizontal),
                    let hit = arView.session.raycast(query).first {
@@ -1045,16 +1044,15 @@ struct SavesModalView: View {
     var body: some View {
         NavigationView {
             List {
-                Section(header: Text("Сохранить текущую партию")) {
-                    ForEach(1...3, id: \.self) { slotNum in
-                        Button("Сохранить в Слот #\(slotNum)") {
-                            gm.saveToSlot(slotId: "slot_\(slotNum)", title: "Слот #\(slotNum)")
+                Section("Сохранить партию") {
+                    ForEach(1...3, id: \.self) { num in
+                        Button("Сохранить в Слот #\(num)") {
+                            gm.saveToSlot(slotId: "slot_\(num)", title: "Слот #\(num)")
                             dismiss()
                         }
                     }
                 }
-                
-                Section(header: Text("Загрузить сохраненную партию")) {
+                Section("Загрузить партию") {
                     if gm.saveSlots.isEmpty {
                         Text("Нет сохраненных партий").foregroundColor(.secondary)
                     } else {
@@ -1062,3 +1060,22 @@ struct SavesModalView: View {
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(slot.title).font(.headline)
+                                    Text("\(slot.dateString) • Фигур: \(slot.pieces.count)").font(.caption).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Button("Загрузить") {
+                                    gm.loadFromSlot(slot)
+                                    dismiss()
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Слоты Сохранений")
+            .navigationBarItems(trailing: Button("Закрыть") { dismiss() })
+        }
+    }
+}
+// ==================== КОНЕЦ ФАЙЛА ====================
