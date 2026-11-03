@@ -146,9 +146,9 @@ struct SaveSlot: Identifiable, Codable {
     var blackSeconds: Int
 }
 
-// Фазы игры (жесткий контроль очереди)
 enum TurnPhase {
     case playerTurn
+    case awaitingClockPress
     case animating
     case botThinking
     case gameOver
@@ -170,7 +170,6 @@ class GameManager: ObservableObject {
     @Published var lastMoveNotation: String = "Начало партии"
     @Published var isARMode: Bool = false
     
-    // Фаза хода (исключает одновременные действия)
     @Published var phase: TurnPhase = .playerTurn
     
     // Часы
@@ -188,13 +187,14 @@ class GameManager: ObservableObject {
     private var moveHistory: [[PieceModel]] = []
     
     @Published var aiChatMessages: [(sender: String, text: String)] = [
-        ("Гроссмейстер AI", "Приветствую! Партия проходит по строгим правилам FIDE. Жду твоих вопросов.")
+        ("Гроссмейстер AI", "Приветствую в Солнечной системе! Сделай ход и нажми на часы.")
     ]
     
     weak var sceneView: SCNView?
     weak var arSceneView: ARSCNView?
     var arBoardAnchorNode: SCNNode?
     var pieceNodes: [UUID: SCNNode] = [:]
+    weak var clockRockerNode: SCNNode?
     
     let colNames = ["A","B","C","D","E","F","G","H"]
     
@@ -276,8 +276,43 @@ class GameManager: ObservableObject {
         SoundEngine.shared.speak("Время вышло. Победа присуждена сопернику.", enabled: voiceEnabled)
     }
     
+    // Нажатие на турнирные часы (передача хода!)
+    func pressChessClock() {
+        guard phase == .awaitingClockPress else { return }
+        
+        SoundEngine.shared.play("click", enabled: sfxEnabled)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        
+        // Анимация качельки часов
+        if let rocker = clockRockerNode {
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.15
+            rocker.eulerAngles.z = (currentTurn == .white) ? -0.12 : 0.12
+            SCNTransaction.commit()
+        }
+        
+        currentTurn = (currentTurn == .white) ? .black : .white
+        moveHistory.append(pieces)
+        autoSave()
+        
+        if mode == .vsBot {
+            if currentTurn == playerSide {
+                phase = .playerTurn
+                statusText = "Твой ход!"
+            } else {
+                phase = .botThinking
+                statusText = "Гроссмейстер думает..."
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    self.triggerBotMove()
+                }
+            }
+        } else {
+            phase = .playerTurn
+            statusText = currentTurn == .white ? "Ход Белых" : "Ход Черных"
+        }
+    }
+    
     func selectPiece(_ piece: PieceModel) {
-        // Выбирать фигуру можно ТОЛЬКО когда фаза хода игрока!
         guard phase == .playerTurn else { return }
         guard piece.side == currentTurn else { return }
         if mode == .vsBot && currentTurn != playerSide { return }
@@ -347,9 +382,7 @@ class GameManager: ObservableObject {
     func executeMove(toCol: Int, toRow: Int) {
         guard let p = selectedPiece, let idx = pieces.firstIndex(where: { $0.id == p.id }) else { return }
         
-        // Блокируем любые нажатия во время полета фигуры
         phase = .animating
-        
         let startNotation = "\(colNames[p.col])\(p.row + 1)"
         let endNotation = "\(colNames[toCol])\(toRow + 1)"
         var isCapture = false
@@ -406,26 +439,13 @@ class GameManager: ObservableObject {
             }
         }
         
-        SoundEngine.shared.play("click", enabled: sfxEnabled)
-        currentTurn = (currentTurn == .white) ? .black : .white
-        moveHistory.append(pieces)
-        autoSave()
-        
-        if mode == .vsBot {
-            if currentTurn == playerSide {
-                phase = .playerTurn
-                statusText = "Твой ход!"
-            } else {
-                phase = .botThinking
-                statusText = "Гроссмейстер думает..."
-                // Пауза 0.8 секунды, чтобы бот не ходил мгновенно
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    self.triggerBotMove()
-                }
-            }
+        // Если ходил бот — он сам нажимает на часы
+        if mode == .vsBot && currentTurn != playerSide {
+            pressChessClock()
         } else {
-            phase = .playerTurn
-            statusText = currentTurn == .white ? "Ход Белых" : "Ход Черных"
+            // Игрок должен нажать на часы сам!
+            phase = .awaitingClockPress
+            statusText = "Нажми на часы ⏱️"
         }
     }
     
@@ -449,7 +469,6 @@ class GameManager: ObservableObject {
     }
     
     func triggerBotMove() {
-        guard phase == .botThinking else { return }
         let boardSnapshot = self.pieces
         let botSide = self.playerSide == .white ? Side.black : Side.white
         let currentDiff = self.difficulty
@@ -524,12 +543,13 @@ class GameManager: ObservableObject {
     }
     
     func performUndo() {
-        guard phase == .playerTurn, undoCount > 0, moveHistory.count > 1 else { return }
+        guard phase == .playerTurn || phase == .awaitingClockPress, undoCount > 0, moveHistory.count > 1 else { return }
         moveHistory.removeLast()
         if let prev = moveHistory.last {
             pieces = prev
             undoCount -= 1
             currentTurn = playerSide
+            phase = .playerTurn
             selectedPiece = nil
             validMoves = []
             statusText = "Ход отменен!"
@@ -582,28 +602,23 @@ class GameManager: ObservableObject {
     }
 }
 
-// MARK: - Staunton Piece Factory
+// MARK: - Staunton Piece Factory (Bright Maple & Ebony)
 class ChessPieceFactory {
     static func buildPieceNode(piece: PieceModel, isSelected: Bool) -> SCNNode {
         let root = SCNNode(); root.name = "piece_\(piece.id.uuidString)"
         
         let mat = SCNMaterial()
-        if let wood = TextureCache.wood {
-            mat.diffuse.contents = wood
-            if piece.side == .white {
-                mat.multiply.contents = UIColor(red: 0.95, green: 0.88, blue: 0.76, alpha: 1.0)
-            } else {
-                mat.multiply.contents = UIColor(red: 0.22, green: 0.14, blue: 0.08, alpha: 1.0)
-            }
+        if piece.side == .white {
+            mat.diffuse.contents = UIColor(red: 0.98, green: 0.94, blue: 0.86, alpha: 1.0)
+            mat.specular.contents = UIColor.white
+            mat.roughness.contents = 0.15
+            mat.metalness.contents = 0.05
         } else {
-            if piece.side == .white {
-                mat.diffuse.contents = UIColor.white
-            } else {
-                mat.diffuse.contents = UIColor.black
-            }
+            mat.diffuse.contents = UIColor(red: 0.15, green: 0.12, blue: 0.10, alpha: 1.0)
+            mat.specular.contents = UIColor(white: 0.8, alpha: 1.0)
+            mat.roughness.contents = 0.18
+            mat.metalness.contents = 0.05
         }
-        mat.metalness.contents = 0.05
-        mat.roughness.contents = 0.25
         mat.lightingModel = .physicallyBased
         
         let baseHeight: Float = isSelected ? 0.45 : 0.05
@@ -656,7 +671,7 @@ class ChessPieceFactory {
     }
 }
 
-// MARK: - 3D Solar System View
+// MARK: - 3D Solar System View with Tournament Clock
 struct Chess3DContainer: UIViewRepresentable {
     @ObservedObject var gameManager: GameManager
     
@@ -664,48 +679,59 @@ struct Chess3DContainer: UIViewRepresentable {
         let view = SCNView()
         let scene = SCNScene()
         view.scene = scene
-        view.backgroundColor = UIColor(red: 0.01, green: 0.01, blue: 0.03, alpha: 1.0)
+        view.backgroundColor = UIColor(red: 0.008, green: 0.008, blue: 0.025, alpha: 1.0)
         view.antialiasingMode = .multisampling4X
         gameManager.sceneView = view
         
-        scene.lightingEnvironment.contents = UIColor(white: 0.85, alpha: 1.0)
-        scene.lightingEnvironment.intensity = 1.3
+        scene.lightingEnvironment.contents = UIColor(white: 0.9, alpha: 1.0)
+        scene.lightingEnvironment.intensity = 1.4
         
-        // Солнце
-        let sunSphere = SCNSphere(radius: 12.0)
-        let sunMat = SCNMaterial(); sunMat.diffuse.contents = UIColor.black
-        sunMat.emission.contents = UIColor(red: 1.0, green: 0.7, blue: 0.2, alpha: 1.0)
-        sunSphere.materials = [sunMat]
-        let sunNode = SCNNode(geometry: sunSphere)
-        sunNode.position = SCNVector3(0, 18, -45)
-        
-        let sunLight = SCNLight()
-        sunLight.type = .omni
-        sunLight.color = UIColor(red: 1.0, green: 0.9, blue: 0.7, alpha: 1.0)
-        sunLight.intensity = 3500
-        sunLight.castsShadow = true
-        sunNode.light = sunLight
+        // --- СОЛНЕЧНАЯ СИСТЕМА В КАДРЕ ---
+        // 1. Солнце
+        let sun = SCNSphere(radius: 3.2)
+        sun.firstMaterial?.emission.contents = UIColor(red: 1.0, green: 0.75, blue: 0.25, alpha: 1.0)
+        let sunNode = SCNNode(geometry: sun)
+        sunNode.position = SCNVector3(-8.5, 7.2, -15.0)
         scene.rootNode.addChildNode(sunNode)
         
-        // Сатурн
-        let planet = SCNSphere(radius: 5.5)
-        let pMat = SCNMaterial(); pMat.diffuse.contents = UIColor(red: 0.82, green: 0.65, blue: 0.48, alpha: 1.0)
-        planet.materials = [pMat]
-        let planetNode = SCNNode(geometry: planet)
-        planetNode.position = SCNVector3(8, 8.5, -20)
+        // 2. Земля и Луна
+        let earth = SCNSphere(radius: 1.3)
+        earth.firstMaterial?.diffuse.contents = UIColor(red: 0.15, green: 0.45, blue: 0.85, alpha: 1.0)
+        let earthNode = SCNNode(geometry: earth)
+        earthNode.position = SCNVector3(-3.5, 5.8, -13.5)
         
-        let ring = SCNCylinder(radius: 10.5, height: 0.04)
-        let rMat = SCNMaterial(); rMat.diffuse.contents = UIColor(red: 0.88, green: 0.75, blue: 0.58, alpha: 0.55)
-        ring.materials = [rMat]
+        let moon = SCNSphere(radius: 0.35)
+        moon.firstMaterial?.diffuse.contents = UIColor(white: 0.85, alpha: 1.0)
+        let moonNode = SCNNode(geometry: moon)
+        moonNode.position = SCNVector3(1.8, 0.4, 0)
+        earthNode.addChildNode(moonNode)
+        scene.rootNode.addChildNode(earthNode)
+        earthNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.8, z: 0, duration: 20)))
+        
+        // 3. Марс
+        let mars = SCNSphere(radius: 0.9)
+        mars.firstMaterial?.diffuse.contents = UIColor(red: 0.85, green: 0.35, blue: 0.15, alpha: 1.0)
+        let marsNode = SCNNode(geometry: mars)
+        marsNode.position = SCNVector3(1.2, 5.4, -12.5)
+        scene.rootNode.addChildNode(marsNode)
+        
+        // 4. Сатурн с кольцами
+        let saturn = SCNSphere(radius: 2.4)
+        saturn.firstMaterial?.diffuse.contents = UIColor(red: 0.82, green: 0.68, blue: 0.5, alpha: 1.0)
+        let saturnNode = SCNNode(geometry: saturn)
+        saturnNode.position = SCNVector3(6.8, 6.8, -14.5)
+        
+        let ring = SCNCylinder(radius: 4.8, height: 0.02)
+        ring.firstMaterial?.diffuse.contents = UIColor(red: 0.88, green: 0.78, blue: 0.6, alpha: 0.65)
         let ringNode = SCNNode(geometry: ring)
-        ringNode.eulerAngles.x = 0.38
-        planetNode.addChildNode(ringNode)
-        scene.rootNode.addChildNode(planetNode)
-        planetNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.4, z: 0, duration: 25)))
+        ringNode.eulerAngles.x = 0.35
+        saturnNode.addChildNode(ringNode)
+        scene.rootNode.addChildNode(saturnNode)
+        saturnNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.5, z: 0, duration: 25)))
         
         // Звезды
         let stars = SCNNode()
-        for _ in 0..<160 {
+        for _ in 0..<180 {
             let starRadius: CGFloat = 0.035
             let star = SCNSphere(radius: starRadius)
             let m = SCNMaterial(); m.emission.contents = UIColor.white
@@ -719,6 +745,7 @@ struct Chess3DContainer: UIViewRepresentable {
         }
         scene.rootNode.addChildNode(stars)
         
+        // Камера
         let orbit = SCNNode(); orbit.name = "orbitNode"
         let camNode = SCNNode(); let cam = SCNCamera()
         cam.bloomIntensity = 1.1; cam.bloomThreshold = 0.5
@@ -730,15 +757,55 @@ struct Chess3DContainer: UIViewRepresentable {
         
         orbit.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.25, z: 0, duration: 20)), forKey: "menuOrbit")
         
-        let amb = SCNLight(); amb.type = .ambient; amb.intensity = 260
+        // --- СТУДИЙНОЕ ОСВЕЩЕНИЕ ---
+        let sunLight = SCNLight()
+        sunLight.type = .directional
+        sunLight.castsShadow = true
+        sunLight.shadowMode = .deferred
+        sunLight.shadowSampleCount = 16
+        sunLight.shadowRadius = 3.5
+        sunLight.color = UIColor(red: 1.0, green: 0.96, blue: 0.88, alpha: 1.0)
+        let lightNode = SCNNode(); lightNode.light = sunLight
+        lightNode.position = SCNVector3(5, 15, 9)
+        lightNode.look(at: SCNVector3Zero)
+        scene.rootNode.addChildNode(lightNode)
+        
+        let amb = SCNLight(); amb.type = .ambient; amb.intensity = 380
         let ambNode = SCNNode(); ambNode.light = amb
         scene.rootNode.addChildNode(ambNode)
         
         buildTexturedBoard(on: scene.rootNode)
+        build3DChessClock(on: scene.rootNode)
         setupInitialPieces(on: scene.rootNode)
         
         context.coordinator.setupTouch(on: view)
         return view
+    }
+    
+    // Создаем физические турнирные часы сбоку доски
+    private func build3DChessClock(on root: SCNNode) {
+        let clockNode = SCNNode()
+        clockNode.name = "chessClock"
+        clockNode.position = SCNVector3(4.8, 0.25, 0)
+        
+        // Корпус часов
+        let bodyGeo = SCNBox(width: 1.2, height: 0.5, length: 2.2, chamferRadius: 0.05)
+        let bodyMat = SCNMaterial(); bodyMat.diffuse.contents = UIColor(white: 0.15, alpha: 1)
+        bodyGeo.materials = [bodyMat]
+        let bodyNode = SCNNode(geometry: bodyGeo)
+        clockNode.addChildNode(bodyNode)
+        
+        // Кнопка-качелька сверху
+        let rockerGeo = SCNBox(width: 0.8, height: 0.12, length: 1.6, chamferRadius: 0.02)
+        let rockerMat = SCNMaterial(); rockerMat.diffuse.contents = UIColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1)
+        rockerGeo.materials = [rockerMat]
+        let rockerNode = SCNNode(geometry: rockerGeo)
+        rockerNode.name = "clockRocker"
+        rockerNode.position = SCNVector3(0, 0.3, 0)
+        clockNode.addChildNode(rockerNode)
+        gameManager.clockRockerNode = rockerNode
+        
+        root.addChildNode(clockNode)
     }
     
     private func setupInitialPieces(on root: SCNNode) {
@@ -787,12 +854,10 @@ struct Chess3DContainer: UIViewRepresentable {
                 let isDarkSquare = (r + c) % 2 != 0
                 if isDarkSquare {
                     if let wood = woodImg { mat.diffuse.contents = wood } else { mat.diffuse.contents = UIColor.darkGray }
-                    mat.metalness.contents = 0.2
-                    mat.roughness.contents = 0.35
+                    mat.metalness.contents = 0.2; mat.roughness.contents = 0.35
                 } else {
                     if let marble = marbleImg { mat.diffuse.contents = marble } else { mat.diffuse.contents = UIColor.white }
-                    mat.metalness.contents = 0.1
-                    mat.roughness.contents = 0.4
+                    mat.metalness.contents = 0.1; mat.roughness.contents = 0.4
                 }
                 box.materials = [mat]
                 let sq = SCNNode(geometry: box)
@@ -834,36 +899,47 @@ struct Chess3DContainer: UIViewRepresentable {
         }
         
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
-            guard !gameManager.inMenu, !gameManager.isPaused, gameManager.phase == .playerTurn else { return }
+            guard !gameManager.inMenu, !gameManager.isPaused, gameManager.phase != .animating else { return }
             guard let view = gesture.view as? SCNView else { return }
             let loc = gesture.location(in: view)
             let hits = view.hitTest(loc, options: [SCNHitTestOption.searchMode: SCNHitTestSearchMode.all.rawValue])
             
-            if let hit = hits.first(where: { $0.node.name?.starts(with: "piece_") == true || $0.node.parent?.name?.starts(with: "piece_") == true }) {
-                let pNode = hit.node.name?.starts(with: "piece_") == true ? hit.node : hit.node.parent!
-                let uuidStr = String(pNode.name!.dropFirst(6))
-                if let piece = gameManager.pieces.first(where: { $0.id.uuidString == uuidStr }) {
-                    if piece.side == gameManager.currentTurn {
-                        gameManager.selectPiece(piece)
-                        return
-                    } else if gameManager.selectedPiece != nil && gameManager.validMoves.contains(where: { $0.col == piece.col && $0.row == piece.row }) {
-                        gameManager.executeMove(toCol: piece.col, toRow: piece.row)
-                        return
+            // Нажатие на 3D часы
+            if hits.first(where: { $0.node.name == "chessClock" || $0.node.name == "clockRocker" || $0.node.parent?.name == "chessClock" }) != nil {
+                gameManager.pressChessClock()
+                return
+            }
+            
+            // Нажатие на фигуры
+            if gameManager.phase == .playerTurn {
+                if let hit = hits.first(where: { $0.node.name?.starts(with: "piece_") == true || $0.node.parent?.name?.starts(with: "piece_") == true }) {
+                    let pNode = hit.node.name?.starts(with: "piece_") == true ? hit.node : hit.node.parent!
+                    let uuidStr = String(pNode.name!.dropFirst(6))
+                    if let piece = gameManager.pieces.first(where: { $0.id.uuidString == uuidStr }) {
+                        if piece.side == gameManager.currentTurn {
+                            gameManager.selectPiece(piece)
+                            return
+                        } else if gameManager.selectedPiece != nil && gameManager.validMoves.contains(where: { $0.col == piece.col && $0.row == piece.row }) {
+                            gameManager.executeMove(toCol: piece.col, toRow: piece.row)
+                            return
+                        }
                     }
                 }
-            }
-            if let hitSq = hits.first(where: { $0.node.name?.starts(with: "sq_") == true || $0.node.name == "moveDot" }) {
-                let nodeName = hitSq.node.name ?? ""
-                let targetCol: Int; let targetRow: Int
-                if nodeName == "moveDot" {
-                    targetCol = Int(round(hitSq.node.position.x + 3.5))
-                    targetRow = Int(round(hitSq.node.position.z + 3.5))
-                } else {
-                    let parts = nodeName.split(separator: "_")
-                    targetCol = Int(parts[1])!; targetRow = Int(parts[2])!
-                }
-                if gameManager.selectedPiece != nil && gameManager.validMoves.contains(where: { $0.col == targetCol && $0.row == targetRow }) {
-                    gameManager.executeMove(toCol: targetCol, toRow: targetRow)
+                
+                // Нажатие на клетку или точку хода
+                if let hitSq = hits.first(where: { $0.node.name?.starts(with: "sq_") == true || $0.node.name == "moveDot" }) {
+                    let nodeName = hitSq.node.name ?? ""
+                    let targetCol: Int; let targetRow: Int
+                    if nodeName == "moveDot" {
+                        targetCol = Int(round(hitSq.node.position.x + 3.5))
+                        targetRow = Int(round(hitSq.node.position.z + 3.5))
+                    } else {
+                        let parts = nodeName.split(separator: "_")
+                        targetCol = Int(parts[1])!; targetRow = Int(parts[2])!
+                    }
+                    if gameManager.selectedPiece != nil && gameManager.validMoves.contains(where: { $0.col == targetCol && $0.row == targetRow }) {
+                        gameManager.executeMove(toCol: targetCol, toRow: targetRow)
+                    }
                 }
             }
         }
@@ -971,7 +1047,6 @@ struct ARChessContainer: UIViewRepresentable {
         }
         
         @objc func handleARTap(_ gesture: UITapGestureRecognizer) {
-            guard gameManager.phase == .playerTurn else { return }
             guard let arView = gesture.view as? ARSCNView else { return }
             let loc = gesture.location(in: arView)
             
@@ -1019,39 +1094,42 @@ struct ARChessContainer: UIViewRepresentable {
                 }
             }
             
-            let hits = arView.hitTest(loc, options: [SCNHitTestOption.searchMode: SCNHitTestSearchMode.all.rawValue])
-            if let hit = hits.first(where: { $0.node.name?.starts(with: "piece_") == true || $0.node.parent?.name?.starts(with: "piece_") == true }) {
-                let pNode = hit.node.name?.starts(with: "piece_") == true ? hit.node : hit.node.parent!
-                let uuidStr = String(pNode.name!.dropFirst(6))
-                if let piece = gameManager.pieces.first(where: { $0.id.uuidString == uuidStr }) {
-                    if piece.side == gameManager.currentTurn {
-                        gameManager.selectPiece(piece)
-                        return
-                    } else if gameManager.selectedPiece != nil && gameManager.validMoves.contains(where: { $0.col == piece.col && $0.row == piece.row }) {
-                        gameManager.executeMove(toCol: piece.col, toRow: piece.row)
-                        return
+            // Нажатие на фигуры в AR
+            if gameManager.phase == .playerTurn {
+                let hits = arView.hitTest(loc, options: [SCNHitTestOption.searchMode: SCNHitTestSearchMode.all.rawValue])
+                if let hit = hits.first(where: { $0.node.name?.starts(with: "piece_") == true || $0.node.parent?.name?.starts(with: "piece_") == true }) {
+                    let pNode = hit.node.name?.starts(with: "piece_") == true ? hit.node : hit.node.parent!
+                    let uuidStr = String(pNode.name!.dropFirst(6))
+                    if let piece = gameManager.pieces.first(where: { $0.id.uuidString == uuidStr }) {
+                        if piece.side == gameManager.currentTurn {
+                            gameManager.selectPiece(piece)
+                            return
+                        } else if gameManager.selectedPiece != nil && gameManager.validMoves.contains(where: { $0.col == piece.col && $0.row == piece.row }) {
+                            gameManager.executeMove(toCol: piece.col, toRow: piece.row)
+                            return
+                        }
                     }
                 }
-            }
-            if let hitSq = hits.first(where: { $0.node.name?.starts(with: "sq_") == true || $0.node.name == "moveDot" }) {
-                let nodeName = hitSq.node.name ?? ""
-                let targetCol: Int; let targetRow: Int
-                if nodeName == "moveDot" {
-                    targetCol = Int(round(hitSq.node.position.x + 3.5))
-                    targetRow = Int(round(hitSq.node.position.z + 3.5))
-                } else {
-                    let parts = nodeName.split(separator: "_")
-                    targetCol = Int(parts[1])!; targetRow = Int(parts[2])!
-                }
-                if gameManager.selectedPiece != nil && gameManager.validMoves.contains(where: { $0.col == targetCol && $0.row == targetRow }) {
-                    gameManager.executeMove(toCol: targetCol, toRow: targetRow)
+                if let hitSq = hits.first(where: { $0.node.name?.starts(with: "sq_") == true || $0.node.name == "moveDot" }) {
+                    let nodeName = hitSq.node.name ?? ""
+                    let targetCol: Int; let targetRow: Int
+                    if nodeName == "moveDot" {
+                        targetCol = Int(round(hitSq.node.position.x + 3.5))
+                        targetRow = Int(round(hitSq.node.position.z + 3.5))
+                    } else {
+                        let parts = nodeName.split(separator: "_")
+                        targetCol = Int(parts[1])!; targetRow = Int(parts[2])!
+                    }
+                    if gameManager.selectedPiece != nil && gameManager.validMoves.contains(where: { $0.col == targetCol && $0.row == targetRow }) {
+                        gameManager.executeMove(toCol: targetCol, toRow: targetRow)
+                    }
                 }
             }
         }
     }
 }
 
-// MARK: - Main UI View Architecture
+// MARK: - Main UI View
 struct MainGameView: View {
     @StateObject private var gm = GameManager()
     @State private var showSaves = false
@@ -1127,8 +1205,8 @@ struct MainMenuOverlay: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("СТОРОНА:").font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundColor(.white.opacity(0.6))
                     Picker("", selection: $gm.playerSide) {
-                        Text("Белые (Клен)").tag(Side.white)
-                        Text("Черные (Орех)").tag(Side.black)
+                        Text("Белые (Слоновая кость)").tag(Side.white)
+                        Text("Черные (Эбен)").tag(Side.black)
                     }.pickerStyle(.segmented)
                 }
                 Toggle(isOn: $gm.isARMode) { Label("AR-Режим (на столе)", systemImage: "camera.viewfinder").font(.system(size: 12, weight: .bold, design: .monospaced)).foregroundColor(.cyan) }
@@ -1150,20 +1228,49 @@ struct GameHUDOverlay: View {
             HStack {
                 Button(action: { gm.isPaused = true }) { Image(systemName: "pause.fill").foregroundColor(.white).padding(9).background(Color.black.opacity(0.75)).clipShape(Circle()) }
                 Spacer()
-                if gm.isClockActive { clockView } else {
+                
+                // Интерактивные часы вверху (можно нажать!)
+                if gm.isClockActive {
+                    Button(action: { gm.pressChessClock() }) {
+                        clockView
+                    }
+                    .disabled(gm.phase != .awaitingClockPress)
+                } else {
                     Text(gm.statusText).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.cyan).padding(.horizontal, 10).padding(.vertical, 5).background(Color.black.opacity(0.8)).cornerRadius(8)
                 }
+                
                 Spacer()
                 Button(action: { showAIChat = true }) { Image(systemName: "brain.head.profile").foregroundColor(.cyan).padding(9).background(Color.black.opacity(0.75)).clipShape(Circle()) }
             }
             .padding(.horizontal, 14).padding(.top, 45)
+            
             Spacer()
+            
             HStack {
                 Button(action: { gm.performUndo() }) {
                     HStack(spacing: 4) { Image(systemName: "arrow.uturn.backward"); Text("Откат (\(gm.undoCount))") }.font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.yellow).padding(.horizontal, 12).padding(.vertical, 8).background(Color.black.opacity(0.75)).cornerRadius(10)
                 }
+                
                 Spacer()
-                Text(gm.lastMoveNotation).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.cyan).padding(.horizontal, 10).padding(.vertical, 8).background(Color.black.opacity(0.75)).cornerRadius(10)
+                
+                // Большая заметная кнопка нажать часы, когда ход сделан!
+                if gm.phase == .awaitingClockPress {
+                    Button(action: { gm.pressChessClock() }) {
+                        HStack {
+                            Image(systemName: "stopwatch.fill")
+                            Text("НАЖАТЬ ЧАСЫ")
+                        }
+                        .font(.system(size: 13, weight: .black, design: .monospaced))
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.yellow)
+                        .cornerRadius(10)
+                        .shadow(color: .yellow, radius: 8)
+                    }
+                } else {
+                    Text(gm.lastMoveNotation).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.cyan).padding(.horizontal, 10).padding(.vertical, 8).background(Color.black.opacity(0.75)).cornerRadius(10)
+                }
             }
             .padding(.horizontal, 16).padding(.bottom, 25)
         }
@@ -1172,15 +1279,20 @@ struct GameHUDOverlay: View {
     @ViewBuilder var clockView: some View {
         let wTurn = gm.currentTurn == .white
         let bTurn = gm.currentTurn == .black
-        let wBg = wTurn ? Color.white.opacity(0.15) : Color.black.opacity(0.5)
-        let bBg = bTurn ? Color.white.opacity(0.15) : Color.black.opacity(0.5)
-        let wFg = wTurn ? Color.green : Color.white.opacity(0.6)
-        let bFg = bTurn ? Color.green : Color.white.opacity(0.6)
+        let isWaiting = gm.phase == .awaitingClockPress
+        let wBg = wTurn ? (isWaiting ? Color.yellow.opacity(0.4) : Color.white.opacity(0.18)) : Color.black.opacity(0.5)
+        let bBg = bTurn ? (isWaiting ? Color.yellow.opacity(0.4) : Color.white.opacity(0.18)) : Color.black.opacity(0.5)
+        let wFg = wTurn ? (isWaiting ? Color.yellow : Color.green) : Color.white.opacity(0.6)
+        let bFg = bTurn ? (isWaiting ? Color.yellow : Color.green) : Color.white.opacity(0.6)
         
         HStack(spacing: 8) {
             Text("⚪️ \(formatSec(gm.whiteSeconds))").font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundColor(wFg).padding(.horizontal, 8).padding(.vertical, 5).background(wBg).cornerRadius(8)
             Text("⚫️ \(formatSec(gm.blackSeconds))").font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundColor(bFg).padding(.horizontal, 8).padding(.vertical, 5).background(bBg).cornerRadius(8)
         }
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isWaiting ? Color.yellow : Color.clear, lineWidth: 1.5)
+        )
     }
     
     private func formatSec(_ s: Int) -> String { return String(format: "%02d:%02d", s / 60, s % 60) }
@@ -1243,7 +1355,6 @@ struct AIChatModalView: View {
                 Divider()
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        // Исправленный правильный стиль кнопок Apple
                         Button("🧠 Лучший ход?") { gm.sendUserMessage("Какой ход лучший?") }
                             .buttonStyle(.bordered)
                             .tint(.cyan)
