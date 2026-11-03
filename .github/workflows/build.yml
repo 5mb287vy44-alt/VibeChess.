@@ -8,6 +8,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Select Xcode 16
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.1.app || sudo xcode-select -s /Applications/Xcode_16.2.app || true
+          xcodebuild -version
+
       - name: Generate Xcode Project
         run: |
           brew install xcodegen
@@ -30,6 +35,8 @@ jobs:
                   CODE_SIGNING_ALLOWED: "NO"
           EOF
           xcodegen generate
+          # Принудительно делаем формат совместимым
+          sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' VibeChess.xcodeproj/project.pbxproj
 
       - name: Build App
         run: |
