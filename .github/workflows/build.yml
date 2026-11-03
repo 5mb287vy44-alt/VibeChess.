@@ -16,7 +16,7 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_16.1.app || sudo xcode-select -s /Applications/Xcode_16.2.app || true
           xcodebuild -version
 
-      - name: Generate App Icon & Audio
+      - name: Generate High-Res Textures, Icon & Audio
         run: |
           mkdir -p Sources/Assets.xcassets/AppIcon.appiconset
 
@@ -38,12 +38,41 @@ jobs:
           }
           EOF
 
-          # Генерация 4K иконки
+          # 1. Генерация 2K текстур дерева и мрамора
           python3 - << 'EOF'
-          import math
+          import math, random
+
+          # Текстура темного дерева 1024x1024
           w, h = 1024, 1024
-          ppm = f'P6\n{w} {h}\n255\n'.encode('ascii') + bytearray(w * h * 3)
+          wood_ppm = f'P6\n{w} {h}\n255\n'.encode('ascii') + bytearray(w * h * 3)
           pixels = bytearray(w * h * 3)
+          for y in range(h):
+              for x in range(w):
+                  idx = (y * w + x) * 3
+                  grain = math.sin(x * 0.05 + math.sin(y * 0.02) * 5.0) * 20.0
+                  noise = random.randint(-8, 8)
+                  base = 35 + grain + noise
+                  pixels[idx] = max(0, min(255, int(base * 1.2)))
+                  pixels[idx+1] = max(0, min(255, int(base * 0.8)))
+                  pixels[idx+2] = max(0, min(255, int(base * 0.5)))
+          with open('wood.ppm', 'wb') as f:
+              f.write(f'P6\n{w} {h}\n255\n'.encode('ascii') + pixels)
+
+          # Текстура белого мрамора 1024x1024
+          pixels_m = bytearray(w * h * 3)
+          for y in range(h):
+              for x in range(w):
+                  idx = (y * w + x) * 3
+                  vein = abs(math.sin(x * 0.015 + y * 0.02 + math.sin(x * 0.03) * 3.0))
+                  val = 210 + vein * 40 + random.randint(-5, 5)
+                  pixels_m[idx] = max(0, min(255, int(val)))
+                  pixels_m[idx+1] = max(0, min(255, int(val * 0.98)))
+                  pixels_m[idx+2] = max(0, min(255, int(val * 0.94)))
+          with open('marble.ppm', 'wb') as f:
+              f.write(f'P6\n{w} {h}\n255\n'.encode('ascii') + pixels_m)
+
+          # Иконка приложения 1024x1024
+          pixels_icon = bytearray(w * h * 3)
           for y in range(h):
               for x in range(w):
                   idx = (y * w + x) * 3
@@ -52,24 +81,23 @@ jobs:
                   r = int(max(0, 15 - dist * 10))
                   g = int(max(0, 22 + (1.0 - dist) * 35))
                   b = int(max(0, 48 + (1.0 - dist) * 75))
-                  if 670 <= y <= 860 and 220 <= x <= 804:
-                      if ((x - 220)//73 + (y - 670)//25) % 2 == 0:
-                          r, g, b = min(255, r+45), min(255, g+70), min(255, b+105)
                   dx = abs(x - 512)
                   if (760 <= y <= 820 and dx < 170) or (620 <= y < 760 and dx < 75) or (410 <= y < 620 and dx < 52) or ((x-512)**2 + (y-360)**2 < 70**2) or (220 <= y <= 310 and dx < 18) or (245 <= y <= 275 and dx < 50):
                       f = 1.0 - (y - 220)/600.0
                       r, g, b = 255, int(185 + f*60), int(45 + f*50)
-                  pixels[idx] = max(0, min(255, r))
-                  pixels[idx+1] = max(0, min(255, g))
-                  pixels[idx+2] = max(0, min(255, b))
+                  pixels_icon[idx] = max(0, min(255, r))
+                  pixels_icon[idx+1] = max(0, min(255, g))
+                  pixels_icon[idx+2] = max(0, min(255, b))
           with open('temp_icon.ppm', 'wb') as f:
-              f.write(f'P6\n{w} {h}\n255\n'.encode('ascii') + pixels)
+              f.write(f'P6\n{w} {h}\n255\n'.encode('ascii') + pixels_icon)
           EOF
 
+          sips -s format png wood.ppm --out Sources/wood_texture.png
+          sips -s format png marble.ppm --out Sources/marble_texture.png
           sips -s format png temp_icon.ppm --out Sources/Assets.xcassets/AppIcon.appiconset/icon_1024.png
-          rm temp_icon.ppm
+          rm *.ppm
 
-          # Генерация звуков с правильным заголовком WAV
+          # Генерация чистых WAV звуков
           python3 - << 'EOF'
           import wave, struct, math, random
           def create_wav(filename, duration, gen):
@@ -87,7 +115,7 @@ jobs:
           create_wav("Sources/capture.wav", 0.6, lambda t, i: ((math.sin(2*math.pi*85.0*t)+(random.random()*2-1)*0.35)*math.exp(-t*12.0), (math.sin(2*math.pi*85.0*t)+(random.random()*2-1)*0.35)*math.exp(-t*12.0)))
           create_wav("Sources/select.wav", 0.12, lambda t, i: (math.sin(2*math.pi*880.0*t)*math.exp(-t*50.0)*0.7, math.sin(2*math.pi*880.0*t)*math.exp(-t*50.0)*0.7))
           create_wav("Sources/alarm.wav", 1.2, lambda t, i: (math.sin(2*math.pi*(950.0 if int(t*8)%2==0 else 600.0)*t)*0.75, math.sin(2*math.pi*(950.0 if int(t*8)%2==0 else 600.0)*t)*0.75))
-          create_wav("Sources/laser.wav", 0.45, lambda t, i: (math.sin(2*math.pi*(1200.0 - t*2200.0)*t)*math.exp(-t*6.0)*0.8, math.sin(2*math.pi*(1200.0 - t*2200.0)*t)*math.exp(-t*6.0)*0.8))
+          create_wav("Sources/laser.wav", 0.5, lambda t, i: (math.sin(2*math.pi*(1500.0 - t*2600.0)*t)*math.exp(-t*5.0)*0.85, math.sin(2*math.pi*(1500.0 - t*2600.0)*t)*math.exp(-t*5.0)*0.85))
           EOF
 
       - name: Generate Xcode Project
@@ -108,7 +136,7 @@ jobs:
                 base:
                   ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
                   GENERATE_INFOPLIST_FILE: YES
-                  INFOPLIST_KEY_NSCameraUsageDescription: "Нужна для отображения шахматной доски на вашем столе в режиме AR."
+                  INFOPLIST_KEY_NSCameraUsageDescription: "Камера необходима для размещения 3D-шахмат на столе в дополненной реальности (AR)."
                   CODE_SIGNING_REQUIRED: "NO"
                   CODE_SIGNING_ALLOWED: "NO"
           EOF
@@ -129,13 +157,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="v1.1.${{ github.run_number }}"
+          VERSION="v1.2.${{ github.run_number }}"
           gh release create "$VERSION" VibeChess.ipa \
-            --title "VibeChess $VERSION (Mega Edition)" \
-            --notes "🚀 Полное обновление VibeChess:
-            - Добавлен AR-режим на реальном столе
-            - Лазерные эффекты и распад фигур
-            - Перки шулера: откат ходов (Undo) и телепорт
-            - Магазин 4 скинов
-            - Голосовой Sci-Fi комментатор
-            - Исправлен звук (работает даже в бесшумном режиме)"
+            --title "VibeChess $VERSION (AR + Slots + Textures)" \
+            --notes "🚀 Глобальное обновление:
+            - Настоящий AR-режим на столе с определением поверхности
+            - Система множественных сохранений (Слоты 1, 2, 3 + Автосейв)
+            - 2K-текстуры дерева и мрамора
+            - Орбитальный лазер со световой вспышкой и искрами"
