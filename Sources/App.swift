@@ -163,12 +163,10 @@ class GameManager: ObservableObject {
     @Published var isARMode: Bool = false
     @Published var isAnimating: Bool = false
     
-    // Часы
     @Published var whiteSeconds: Int = 300
     @Published var blackSeconds: Int = 300
     @Published var isClockActive: Bool = false
     
-    // Настройки
     @Published var sfxEnabled: Bool = true { didSet { saveSettings() } }
     @Published var musicEnabled: Bool = true { didSet { saveSettings(); SoundEngine.shared.toggleMusic(musicEnabled) } }
     @Published var voiceEnabled: Bool = true { didSet { saveSettings() } }
@@ -237,7 +235,6 @@ class GameManager: ObservableObject {
         for c in 0..<8 { pieces.append(PieceModel(type: .pawn, side: .white, col: c, row: 1)) }
         let bw: [PieceType] = [.rook, .knight, .bishop, .queen, .king, .bishop, .knight, .rook]
         for c in 0..<8 { pieces.append(PieceModel(type: bw[c], side: .white, col: c, row: 0)) }
-        
         for c in 0..<8 { pieces.append(PieceModel(type: .pawn, side: .black, col: c, row: 6)) }
         let bb: [PieceType] = [.rook, .knight, .bishop, .queen, .king, .bishop, .knight, .rook]
         for c in 0..<8 { pieces.append(PieceModel(type: bb[c], side: .black, col: c, row: 7)) }
@@ -351,11 +348,11 @@ class GameManager: ObservableObject {
         lastMoveNotation = "\(p.type.rawValue.capitalized) \(startNotation) ➔ \(endNotation)"
         if isCapture { lastMoveNotation += " (Взятие)" }
         
-        let targetPos = SCNVector3(x: Float(toCol) - 3.5, y: 0.05, z: Float(toRow) - 3.5)
+        let targetPos = SCNVector3(Float(toCol) - 3.5, 0.05, Float(toRow) - 3.5)
         if let node = pieceNodes[p.id] {
-            let lift = SCNAction.move(by: SCNVector3(x: 0, y: 0.8, z: 0), duration: 0.15)
+            let lift = SCNAction.move(by: SCNVector3(0, 0.8, 0), duration: 0.15)
             lift.timingMode = .easeOut
-            let glide = SCNAction.move(to: SCNVector3(x: targetPos.x, y: 0.85, z: targetPos.z), duration: 0.25)
+            let glide = SCNAction.move(to: SCNVector3(targetPos.x, 0.85, targetPos.z), duration: 0.25)
             glide.timingMode = .easeInEaseOut
             let drop = SCNAction.move(to: targetPos, duration: 0.15)
             drop.timingMode = .easeIn
@@ -410,8 +407,12 @@ class GameManager: ObservableObject {
         body.mass = 2.0
         body.isAffectedByGravity = false
         node.physicsBody = body
-        body.applyForce(SCNVector3(x: Float.random(in: -8...8), y: Float.random(in: 6...12), z: Float.random(in: -8...8)), asImpulse: true)
-        body.applyTorque(SCNVector4(x: 1, y: 0, z: 1, w: 10), asImpulse: true)
+        
+        let fx = Float.random(in: -8...8)
+        let fy = Float.random(in: 6...12)
+        let fz = Float.random(in: -8...8)
+        body.applyForce(SCNVector3(fx, fy, fz), asImpulse: true)
+        body.applyTorque(SCNVector4(1, 0, 1, 10), asImpulse: true)
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             node.removeFromParentNode()
@@ -498,7 +499,7 @@ class GameManager: ObservableObject {
             } else if lower.contains("оцен") || lower.contains("шанс") {
                 let w = self.pieces.filter { $0.side == .white }.count
                 let b = self.pieces.filter { $0.side == .black }.count
-                reply = "Материал на доске: Белые (\(w)) vs Черные (\(b)). Позиция в динамическом равновесии."
+                reply = "Материал на доске: Белые (\(w)) vs Черные (\(b))."
             } else {
                 reply = "Веди позиционную игру, контролируй диагонали и рассчитывай ответы на два хода вперед."
             }
@@ -574,11 +575,17 @@ class ChessPieceFactory {
         let mat = SCNMaterial()
         if let wood = TextureCache.wood {
             mat.diffuse.contents = wood
-            mat.multiply.contents = piece.side == .white ?
-                UIColor(red: 0.95, green: 0.88, blue: 0.76, alpha: 1.0) :
-                UIColor(red: 0.22, green: 0.14, blue: 0.08, alpha: 1.0)
+            if piece.side == .white {
+                mat.multiply.contents = UIColor(red: 0.95, green: 0.88, blue: 0.76, alpha: 1.0)
+            } else {
+                mat.multiply.contents = UIColor(red: 0.22, green: 0.14, blue: 0.08, alpha: 1.0)
+            }
         } else {
-            mat.diffuse.contents = piece.side == .white ? UIColor.white : UIColor.black
+            if piece.side == .white {
+                mat.diffuse.contents = UIColor.white
+            } else {
+                mat.diffuse.contents = UIColor.black
+            }
         }
         mat.metalness.contents = 0.05
         mat.roughness.contents = 0.25
@@ -586,50 +593,50 @@ class ChessPieceFactory {
         
         let baseHeight: Float = isSelected ? 0.45 : 0.05
         let base = SCNCylinder(radius: 0.35, height: 0.15); base.materials = [mat]
-        let baseNode = SCNNode(geometry: base); baseNode.position = SCNVector3(x: 0, y: 0.075, z: 0)
+        let baseNode = SCNNode(geometry: base); baseNode.position = SCNVector3(0, 0.075, 0)
         root.addChildNode(baseNode)
         
         switch piece.type {
         case .pawn:
             let b = SCNCone(topRadius: 0.14, bottomRadius: 0.28, height: 0.45); b.materials = [mat]
-            let bn = SCNNode(geometry: b); bn.position = SCNVector3(x: 0, y: 0.35, z: 0)
+            let bn = SCNNode(geometry: b); bn.position = SCNVector3(0, 0.35, 0)
             let h = SCNSphere(radius: 0.16); h.materials = [mat]
-            let hn = SCNNode(geometry: h); hn.position = SCNVector3(x: 0, y: 0.65, z: 0)
+            let hn = SCNNode(geometry: h); hn.position = SCNVector3(0, 0.65, 0)
             root.addChildNode(bn); root.addChildNode(hn)
         case .rook:
             let t = SCNCylinder(radius: 0.3, height: 0.65); t.materials = [mat]
-            let tn = SCNNode(geometry: t); tn.position = SCNVector3(x: 0, y: 0.45, z: 0)
+            let tn = SCNNode(geometry: t); tn.position = SCNVector3(0, 0.45, 0)
             let c = SCNBox(width: 0.55, height: 0.15, length: 0.55, chamferRadius: 0.02); c.materials = [mat]
-            let cn = SCNNode(geometry: c); cn.position = SCNVector3(x: 0, y: 0.8, z: 0)
+            let cn = SCNNode(geometry: c); cn.position = SCNVector3(0, 0.8, 0)
             root.addChildNode(tn); root.addChildNode(cn)
         case .knight:
             let b = SCNCylinder(radius: 0.25, height: 0.4); b.materials = [mat]
-            let bn = SCNNode(geometry: b); bn.position = SCNVector3(x: 0, y: 0.35, z: 0)
+            let bn = SCNNode(geometry: b); bn.position = SCNVector3(0, 0.35, 0)
             let h = SCNBox(width: 0.25, height: 0.4, length: 0.42, chamferRadius: 0.05); h.materials = [mat]
-            let hn = SCNNode(geometry: h); hn.position = SCNVector3(x: 0, y: 0.68, z: 0.1); hn.eulerAngles.x = 0.3
+            let hn = SCNNode(geometry: h); hn.position = SCNVector3(0, 0.68, 0.1); hn.eulerAngles.x = 0.3
             root.addChildNode(bn); root.addChildNode(hn)
         case .bishop:
             let b = SCNCone(topRadius: 0.12, bottomRadius: 0.26, height: 0.6); b.materials = [mat]
-            let bn = SCNNode(geometry: b); bn.position = SCNVector3(x: 0, y: 0.45, z: 0)
+            let bn = SCNNode(geometry: b); bn.position = SCNVector3(0, 0.45, 0)
             let t = SCNSphere(radius: 0.14); t.materials = [mat]
-            let tn = SCNNode(geometry: t); tn.position = SCNVector3(x: 0, y: 0.8, z: 0)
+            let tn = SCNNode(geometry: t); tn.position = SCNVector3(0, 0.8, 0)
             root.addChildNode(bn); root.addChildNode(tn)
         case .queen:
             let b = SCNCone(topRadius: 0.2, bottomRadius: 0.3, height: 0.8); b.materials = [mat]
-            let bn = SCNNode(geometry: b); bn.position = SCNVector3(x: 0, y: 0.55, z: 0)
+            let bn = SCNNode(geometry: b); bn.position = SCNVector3(0, 0.55, 0)
             let c = SCNTorus(ringRadius: 0.22, pipeRadius: 0.06); c.materials = [mat]
-            let cn = SCNNode(geometry: c); cn.position = SCNVector3(x: 0, y: 0.98, z: 0)
+            let cn = SCNNode(geometry: c); cn.position = SCNVector3(0, 0.98, 0)
             root.addChildNode(bn); root.addChildNode(cn)
         case .king:
             let b = SCNCylinder(radius: 0.3, height: 0.85); b.materials = [mat]
-            let bn = SCNNode(geometry: b); bn.position = SCNVector3(x: 0, y: 0.58, z: 0)
+            let bn = SCNNode(geometry: b); bn.position = SCNVector3(0, 0.58, 0)
             let v = SCNBox(width: 0.08, height: 0.25, length: 0.08, chamferRadius: 0.01); v.materials = [mat]
-            let vn = SCNNode(geometry: v); vn.position = SCNVector3(x: 0, y: 1.12, z: 0)
+            let vn = SCNNode(geometry: v); vn.position = SCNVector3(0, 1.12, 0)
             let h = SCNBox(width: 0.22, height: 0.08, length: 0.08, chamferRadius: 0.01); h.materials = [mat]
-            let hn = SCNNode(geometry: h); hn.position = SCNVector3(x: 0, y: 1.15, z: 0)
+            let hn = SCNNode(geometry: h); hn.position = SCNVector3(0, 1.15, 0)
             root.addChildNode(bn); root.addChildNode(vn); root.addChildNode(hn)
         }
-        root.position = SCNVector3(x: Float(piece.col) - 3.5, y: baseHeight, z: Float(piece.row) - 3.5)
+        root.position = SCNVector3(Float(piece.col) - 3.5, baseHeight, Float(piece.row) - 3.5)
         return root
     }
 }
@@ -649,12 +656,11 @@ struct Chess3DContainer: UIViewRepresentable {
         scene.lightingEnvironment.contents = UIColor(white: 0.85, alpha: 1.0)
         scene.lightingEnvironment.intensity = 1.3
         
-        // Сатурн
         let planet = SCNSphere(radius: 5.5)
         let pMat = SCNMaterial(); pMat.diffuse.contents = UIColor(red: 0.82, green: 0.65, blue: 0.48, alpha: 1.0)
         planet.materials = [pMat]
         let planetNode = SCNNode(geometry: planet)
-        planetNode.position = SCNVector3(x: 0, y: 8.5, z: -16)
+        planetNode.position = SCNVector3(0, 8.5, -16)
         
         let ring = SCNCylinder(radius: 10.5, height: 0.04)
         let rMat = SCNMaterial(); rMat.diffuse.contents = UIColor(red: 0.88, green: 0.75, blue: 0.58, alpha: 0.55)
@@ -665,14 +671,17 @@ struct Chess3DContainer: UIViewRepresentable {
         scene.rootNode.addChildNode(planetNode)
         planetNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.4, z: 0, duration: 25)))
         
-        // Звезды с жестко прописанным CGFloat для радиуса
         let stars = SCNNode()
         for _ in 0..<160 {
-            let star = SCNSphere(radius: 0.035) // Точный литерал, компилятор не запутается
+            let rds = CGFloat.random(in: 0.02...0.05)
+            let star = SCNSphere(radius: rds)
             let m = SCNMaterial(); m.emission.contents = UIColor.white
             star.materials = [m]
             let sn = SCNNode(geometry: star)
-            sn.position = SCNVector3(x: Float.random(in: -35...35), y: Float.random(in: -15...35), z: Float.random(in: -35...35))
+            let px = Float.random(in: -35...35)
+            let py = Float.random(in: -15...35)
+            let pz = Float.random(in: -35...35)
+            sn.position = SCNVector3(px, py, pz)
             stars.addChildNode(sn)
         }
         scene.rootNode.addChildNode(stars)
@@ -680,8 +689,8 @@ struct Chess3DContainer: UIViewRepresentable {
         let orbit = SCNNode(); orbit.name = "orbitNode"
         let camNode = SCNNode(); let cam = SCNCamera()
         cam.bloomIntensity = 1.1; cam.bloomThreshold = 0.5
-        camNode.camera = cam; camNode.position = SCNVector3(x: 0, y: 9.8, z: 9.2)
-        camNode.look(at: SCNVector3(x: 0, y: 0, z: -0.5))
+        camNode.camera = cam; camNode.position = SCNVector3(0, 9.8, 9.2)
+        camNode.look(at: SCNVector3(0, 0, -0.5))
         orbit.addChildNode(camNode)
         scene.rootNode.addChildNode(orbit)
         view.pointOfView = camNode
@@ -690,8 +699,8 @@ struct Chess3DContainer: UIViewRepresentable {
         
         let sun = SCNLight(); sun.type = .directional; sun.castsShadow = true
         sun.shadowMode = .deferred; sun.shadowSampleCount = 16
-        let sunNode = SCNNode(); sunNode.light = sun; sunNode.position = SCNVector3(x: 7, y: 16, z: 7)
-        sunNode.look(at: SCNVector3(x: 0, y: 0, z: 0))
+        let sunNode = SCNNode(); sunNode.light = sun; sunNode.position = SCNVector3(7, 16, 7)
+        sunNode.look(at: SCNVector3Zero)
         scene.rootNode.addChildNode(sunNode)
         
         let amb = SCNLight(); amb.type = .ambient; amb.intensity = 260
@@ -738,17 +747,20 @@ struct Chess3DContainer: UIViewRepresentable {
             for c in 0..<8 {
                 let box = SCNBox(width: 1.0, height: 0.15, length: 1.0, chamferRadius: 0.02)
                 let mat = SCNMaterial(); mat.lightingModel = .physicallyBased
-                if (r + c) % 2 != 0 {
-                    mat.diffuse.contents = woodImg ?? UIColor(white: 0.12, alpha: 1)
-                    mat.metalness.contents = 0.2; mat.roughness.contents = 0.35
+                let isDarkSquare = (r + c) % 2 != 0
+                if isDarkSquare {
+                    if let wood = woodImg { mat.diffuse.contents = wood } else { mat.diffuse.contents = UIColor.darkGray }
+                    mat.metalness.contents = 0.2
+                    mat.roughness.contents = 0.35
                 } else {
-                    mat.diffuse.contents = marbleImg ?? UIColor(white: 0.88, alpha: 1)
-                    mat.metalness.contents = 0.1; mat.roughness.contents = 0.4
+                    if let marble = marbleImg { mat.diffuse.contents = marble } else { mat.diffuse.contents = UIColor.white }
+                    mat.metalness.contents = 0.1
+                    mat.roughness.contents = 0.4
                 }
                 box.materials = [mat]
                 let sq = SCNNode(geometry: box)
                 sq.name = "sq_\(c)_\(r)"
-                sq.position = SCNVector3(x: Float(c) - 3.5, y: 0, z: Float(r) - 3.5)
+                sq.position = SCNVector3(Float(c) - 3.5, 0, Float(r) - 3.5)
                 sq.physicsBody = SCNPhysicsBody(type: .static, shape: nil)
                 board.addChildNode(sq)
             }
@@ -766,7 +778,7 @@ struct Chess3DContainer: UIViewRepresentable {
             dot.materials = [mat]
             let dotNode = SCNNode(geometry: dot)
             dotNode.name = "moveDot"
-            dotNode.position = SCNVector3(x: Float(m.col) - 3.5, y: 0.2, z: Float(m.row) - 3.5)
+            dotNode.position = SCNVector3(Float(m.col) - 3.5, 0.2, Float(m.row) - 3.5)
             root.addChildNode(dotNode)
         }
     }
@@ -858,7 +870,8 @@ struct ARChessContainer: UIViewRepresentable {
                 }
                 gameManager.pieceNodes.removeAll()
                 for p in gameManager.pieces {
-                    let node = ChessPieceFactory.buildPieceNode(piece: p, isSelected: gameManager.selectedPiece?.id == p.id)
+                    let isSel = gameManager.selectedPiece?.id == p.id
+                    let node = ChessPieceFactory.buildPieceNode(piece: p, isSelected: isSel)
                     anchor.addChildNode(node)
                     gameManager.pieceNodes[p.id] = node
                 }
@@ -875,7 +888,7 @@ struct ARChessContainer: UIViewRepresentable {
             dot.materials = [mat]
             let dotNode = SCNNode(geometry: dot)
             dotNode.name = "moveDot"
-            dotNode.position = SCNVector3(x: Float(m.col) - 3.5, y: 0.2, z: Float(m.row) - 3.5)
+            dotNode.position = SCNVector3(Float(m.col) - 3.5, 0.2, Float(m.row) - 3.5)
             root.addChildNode(dotNode)
         }
     }
@@ -907,11 +920,13 @@ struct ARChessContainer: UIViewRepresentable {
                 return
             }
             let center = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
-            // Жестко заданные типы для избежания ошибок компилятора!
-            if let query = arView.raycastQuery(from: center, allowing: ARRaycastQuery.Target.estimatedPlane, alignment: ARRaycastQuery.TargetAlignment.horizontal),
-               let hit = arView.session.raycast(query).first {
-                reticleNode?.simdTransform = hit.worldTransform
-                reticleNode?.isHidden = false
+            if let query = arView.raycastQuery(from: center, allowing: ARRaycastQuery.Target.estimatedPlane, alignment: ARRaycastQuery.TargetAlignment.horizontal) {
+                if let hit = arView.session.raycast(query).first {
+                    reticleNode?.simdTransform = hit.worldTransform
+                    reticleNode?.isHidden = false
+                } else {
+                    reticleNode?.isHidden = true
+                }
             } else {
                 reticleNode?.isHidden = true
             }
@@ -923,38 +938,44 @@ struct ARChessContainer: UIViewRepresentable {
             let loc = gesture.location(in: arView)
             
             if gameManager.arBoardAnchorNode == nil {
-                if let query = arView.raycastQuery(from: loc, allowing: ARRaycastQuery.Target.estimatedPlane, alignment: ARRaycastQuery.TargetAlignment.horizontal),
-                   let hit = arView.session.raycast(query).first {
-                    let anchorNode = SCNNode()
-                    anchorNode.simdTransform = hit.worldTransform
-                    anchorNode.scale = SCNVector3(x: 0.12, y: 0.12, z: 0.12)
-                    
-                    let woodImg = TextureCache.wood
-                    let marbleImg = TextureCache.marble
-                    for r in 0..<8 {
-                        for c in 0..<8 {
-                            let box = SCNBox(width: 1.0, height: 0.1, length: 1.0, chamferRadius: 0.02)
-                            let mat = SCNMaterial()
-                            mat.diffuse.contents = (r + c) % 2 != 0 ? (woodImg ?? UIColor.darkGray) : (marbleImg ?? UIColor.white)
-                            box.materials = [mat]
-                            let sq = SCNNode(geometry: box)
-                            sq.name = "sq_\(c)_\(r)"
-                            sq.position = SCNVector3(x: Float(c) - 3.5, y: 0, z: Float(r) - 3.5)
-                            anchorNode.addChildNode(sq)
+                if let query = arView.raycastQuery(from: loc, allowing: ARRaycastQuery.Target.estimatedPlane, alignment: ARRaycastQuery.TargetAlignment.horizontal) {
+                    if let hit = arView.session.raycast(query).first {
+                        let anchorNode = SCNNode()
+                        anchorNode.simdTransform = hit.worldTransform
+                        anchorNode.scale = SCNVector3(0.12, 0.12, 0.12)
+                        
+                        let woodImg = TextureCache.wood
+                        let marbleImg = TextureCache.marble
+                        for r in 0..<8 {
+                            for c in 0..<8 {
+                                let box = SCNBox(width: 1.0, height: 0.1, length: 1.0, chamferRadius: 0.02)
+                                let mat = SCNMaterial()
+                                let isDark = (r + c) % 2 != 0
+                                if isDark {
+                                    if let wood = woodImg { mat.diffuse.contents = wood } else { mat.diffuse.contents = UIColor.darkGray }
+                                } else {
+                                    if let marble = marbleImg { mat.diffuse.contents = marble } else { mat.diffuse.contents = UIColor.white }
+                                }
+                                box.materials = [mat]
+                                let sq = SCNNode(geometry: box)
+                                sq.name = "sq_\(c)_\(r)"
+                                sq.position = SCNVector3(Float(c) - 3.5, 0, Float(r) - 3.5)
+                                anchorNode.addChildNode(sq)
+                            }
                         }
+                        arView.scene.rootNode.addChildNode(anchorNode)
+                        gameManager.arBoardAnchorNode = anchorNode
+                        gameManager.statusText = "Доска на столе! Начинай игру!"
+                        SoundEngine.shared.play("move")
+                        reticleNode?.removeFromParentNode()
+                        
+                        for p in gameManager.pieces {
+                            let node = ChessPieceFactory.buildPieceNode(piece: p, isSelected: false)
+                            anchorNode.addChildNode(node)
+                            gameManager.pieceNodes[p.id] = node
+                        }
+                        return
                     }
-                    arView.scene.rootNode.addChildNode(anchorNode)
-                    gameManager.arBoardAnchorNode = anchorNode
-                    gameManager.statusText = "Доска на столе! Начинай игру!"
-                    SoundEngine.shared.play("move")
-                    reticleNode?.removeFromParentNode()
-                    
-                    for p in gameManager.pieces {
-                        let node = ChessPieceFactory.buildPieceNode(piece: p, isSelected: false)
-                        anchorNode.addChildNode(node)
-                        gameManager.pieceNodes[p.id] = node
-                    }
-                    return
                 }
             }
             
@@ -990,7 +1011,7 @@ struct ARChessContainer: UIViewRepresentable {
     }
 }
 
-// MARK: - COMPLETELY FLATTENED UI (FOR SWIFT COMPILER)
+// MARK: - Main UI View Architecture
 struct MainGameView: View {
     @StateObject private var gm = GameManager()
     @State private var showSaves = false
@@ -1001,20 +1022,8 @@ struct MainGameView: View {
     
     var body: some View {
         ZStack {
-            if gm.isARMode {
-                ARChessContainer(gameManager: gm).ignoresSafeArea()
-            } else {
-                Chess3DContainer(gameManager: gm).ignoresSafeArea()
-            }
-            
-            if gm.inMenu {
-                menuView
-            } else {
-                hudView
-                if gm.isPaused {
-                    pauseView
-                }
-            }
+            sceneLayer
+            uiLayer
         }
         .onReceive(timer) { _ in gm.onClockTick() }
         .sheet(isPresented: $showSaves) { SavesModalView(gm: gm) }
@@ -1022,11 +1031,43 @@ struct MainGameView: View {
         .sheet(isPresented: $showSettings) { SettingsModalView(gm: gm) }
     }
     
-    private var menuView: some View {
+    @ViewBuilder var sceneLayer: some View {
+        if gm.isARMode {
+            ARChessContainer(gameManager: gm).ignoresSafeArea()
+        } else {
+            Chess3DContainer(gameManager: gm).ignoresSafeArea()
+        }
+    }
+    
+    @ViewBuilder var uiLayer: some View {
+        if gm.inMenu {
+            MainMenuOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings, showAIChat: $showAIChat)
+        } else {
+            gameHUDAndPause
+        }
+    }
+    
+    @ViewBuilder var gameHUDAndPause: some View {
+        ZStack {
+            GameHUDOverlay(gm: gm, showAIChat: $showAIChat)
+            if gm.isPaused {
+                PauseMenuOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings)
+            }
+        }
+    }
+}
+
+// MARK: - UI Subviews (Completely flat for Swift Compiler)
+struct MainMenuOverlay: View {
+    @ObservedObject var gm: GameManager
+    @Binding var showSaves: Bool
+    @Binding var showSettings: Bool
+    @Binding var showAIChat: Bool
+    
+    var body: some View {
         ScrollView {
             VStack(spacing: 16) {
                 Text("VIBE CHESS 3D").font(.system(size: 28, weight: .black, design: .monospaced)).foregroundColor(.cyan).shadow(color: .cyan, radius: 10)
-                
                 HStack {
                     Button(action: { showSaves = true }) { Label("СЕЙВЫ", systemImage: "folder.fill").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.yellow) }
                     Spacer()
@@ -1050,9 +1091,7 @@ struct MainGameView: View {
                         Text("Черные (Орех)").tag(Side.black)
                     }.pickerStyle(.segmented)
                 }
-                Toggle(isOn: $gm.isARMode) {
-                    Label("AR-Режим (на столе)", systemImage: "camera.viewfinder").font(.system(size: 12, weight: .bold, design: .monospaced)).foregroundColor(.cyan)
-                }
+                Toggle(isOn: $gm.isARMode) { Label("AR-Режим (на столе)", systemImage: "camera.viewfinder").font(.system(size: 12, weight: .bold, design: .monospaced)).foregroundColor(.cyan) }
                 Button(action: { gm.startNewGame(mode: gm.mode, side: gm.playerSide, diff: gm.difficulty, time: gm.timeControl) }) {
                     Text("НАЧАТЬ ПАРТИЮ").font(.system(size: 15, weight: .bold, design: .monospaced)).foregroundColor(.black).frame(maxWidth: .infinity).padding(.vertical, 14).background(Color.cyan).cornerRadius(12)
                 }
@@ -1060,18 +1099,18 @@ struct MainGameView: View {
             .padding(22).background(Color.black.opacity(0.85)).cornerRadius(22).overlay(RoundedRectangle(cornerRadius: 22).stroke(Color.cyan.opacity(0.5), lineWidth: 1.5)).padding(.horizontal, 22).padding(.top, 65)
         }
     }
+}
+
+struct GameHUDOverlay: View {
+    @ObservedObject var gm: GameManager
+    @Binding var showAIChat: Bool
     
-    private var hudView: some View {
+    var body: some View {
         VStack {
             HStack {
                 Button(action: { gm.isPaused = true }) { Image(systemName: "pause.fill").foregroundColor(.white).padding(9).background(Color.black.opacity(0.75)).clipShape(Circle()) }
                 Spacer()
-                if gm.isClockActive {
-                    HStack(spacing: 8) {
-                        Text("⚪️ \(formatSec(gm.whiteSeconds))").font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundColor(gm.currentTurn == .white ? .green : .white.opacity(0.6)).padding(.horizontal, 8).padding(.vertical, 5).background(gm.currentTurn == .white ? Color.white.opacity(0.15) : Color.black.opacity(0.5)).cornerRadius(8)
-                        Text("⚫️ \(formatSec(gm.blackSeconds))").font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundColor(gm.currentTurn == .black ? .green : .white.opacity(0.6)).padding(.horizontal, 8).padding(.vertical, 5).background(gm.currentTurn == .black ? Color.white.opacity(0.15) : Color.black.opacity(0.5)).cornerRadius(8)
-                    }
-                } else {
+                if gm.isClockActive { clockView } else {
                     Text(gm.statusText).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.cyan).padding(.horizontal, 10).padding(.vertical, 5).background(Color.black.opacity(0.8)).cornerRadius(8)
                 }
                 Spacer()
@@ -1090,7 +1129,29 @@ struct MainGameView: View {
         }
     }
     
-    private var pauseView: some View {
+    @ViewBuilder var clockView: some View {
+        let wTurn = gm.currentTurn == .white
+        let bTurn = gm.currentTurn == .black
+        let wBg = wTurn ? Color.white.opacity(0.15) : Color.black.opacity(0.5)
+        let bBg = bTurn ? Color.white.opacity(0.15) : Color.black.opacity(0.5)
+        let wFg = wTurn ? Color.green : Color.white.opacity(0.6)
+        let bFg = bTurn ? Color.green : Color.white.opacity(0.6)
+        
+        HStack(spacing: 8) {
+            Text("⚪️ \(formatSec(gm.whiteSeconds))").font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundColor(wFg).padding(.horizontal, 8).padding(.vertical, 5).background(wBg).cornerRadius(8)
+            Text("⚫️ \(formatSec(gm.blackSeconds))").font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundColor(bFg).padding(.horizontal, 8).padding(.vertical, 5).background(bBg).cornerRadius(8)
+        }
+    }
+    
+    private func formatSec(_ s: Int) -> String { return String(format: "%02d:%02d", s / 60, s % 60) }
+}
+
+struct PauseMenuOverlay: View {
+    @ObservedObject var gm: GameManager
+    @Binding var showSaves: Bool
+    @Binding var showSettings: Bool
+    
+    var body: some View {
         ZStack {
             Color.black.opacity(0.8).ignoresSafeArea()
             VStack(spacing: 16) {
@@ -1104,8 +1165,6 @@ struct MainGameView: View {
             .padding(26).background(Color.black.opacity(0.95)).cornerRadius(20).overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.2), lineWidth: 1))
         }
     }
-    
-    private func formatSec(_ s: Int) -> String { return String(format: "%02d:%02d", s / 60, s % 60) }
 }
 
 // MARK: - Modals
@@ -1113,6 +1172,7 @@ struct AIChatModalView: View {
     @ObservedObject var gm: GameManager
     @Environment(\.dismiss) var dismiss
     @State private var inputMessage: String = ""
+    
     var body: some View {
         NavigationView {
             VStack {
@@ -1120,13 +1180,22 @@ struct AIChatModalView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(0..<gm.aiChatMessages.count, id: \.self) { idx in
                             let msg = gm.aiChatMessages[idx]
-                            HStack {
-                                if msg.sender == "Ты" { Spacer() }
-                                VStack(alignment: msg.sender == "Ты" ? .trailing : .leading) {
-                                    Text(msg.sender).font(.caption2).foregroundColor(.gray)
-                                    Text(msg.text).padding(10).background(msg.sender == "Ты" ? Color.cyan.opacity(0.3) : Color.white.opacity(0.12)).cornerRadius(12)
+                            if msg.sender == "Ты" {
+                                HStack {
+                                    Spacer()
+                                    VStack(alignment: .trailing) {
+                                        Text(msg.sender).font(.caption2).foregroundColor(.gray)
+                                        Text(msg.text).padding(10).background(Color.cyan.opacity(0.3)).cornerRadius(12)
+                                    }
                                 }
-                                if msg.sender != "Ты" { Spacer() }
+                            } else {
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(msg.sender).font(.caption2).foregroundColor(.gray)
+                                        Text(msg.text).padding(10).background(Color.white.opacity(0.12)).cornerRadius(12)
+                                    }
+                                    Spacer()
+                                }
                             }
                         }
                     }.padding()
