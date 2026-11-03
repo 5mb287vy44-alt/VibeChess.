@@ -92,7 +92,7 @@ struct TextureCache {
     }()
 }
 
-// MARK: - Enums
+// MARK: - Enums & Models
 enum TimeControl: String, CaseIterable, Identifiable, Codable {
     case infinite = "Без времени"
     case blitz3 = "Блиц 3 мин"
@@ -146,7 +146,7 @@ struct SaveSlot: Identifiable, Codable {
     var blackSeconds: Int
 }
 
-// MARK: - Strict Game Manager
+// MARK: - GameManager
 class GameManager: ObservableObject {
     @Published var pieces: [PieceModel] = []
     @Published var selectedPiece: PieceModel? = nil
@@ -161,7 +161,6 @@ class GameManager: ObservableObject {
     @Published var statusText: String = "Твой ход!"
     @Published var lastMoveNotation: String = "Начало партии"
     @Published var isARMode: Bool = false
-    
     @Published var isAnimating: Bool = false
     
     // Часы
@@ -335,8 +334,8 @@ class GameManager: ObservableObject {
         isAnimating = true
         let startNotation = "\(colNames[p.col])\(p.row + 1)"
         let endNotation = "\(colNames[toCol])\(toRow + 1)"
-        
         var isCapture = false
+        
         if let targetIdx = pieces.firstIndex(where: { $0.col == toCol && $0.row == toRow && $0.side != p.side }) {
             isCapture = true
             let captured = pieces[targetIdx]
@@ -354,16 +353,10 @@ class GameManager: ObservableObject {
         
         let targetPos = SCNVector3(Float(toCol) - 3.5, 0.05, Float(toRow) - 3.5)
         if let node = pieceNodes[p.id] {
-            let lift = SCNAction.move(by: SCNVector3(0, 0.8, 0), duration: 0.15)
-            lift.timingMode = .easeOut
-            let glide = SCNAction.move(to: SCNVector3(targetPos.x, 0.85, targetPos.z), duration: 0.25)
-            glide.timingMode = .easeInEaseOut
-            let drop = SCNAction.move(to: targetPos, duration: 0.15)
-            drop.timingMode = .easeIn
-            
-            let finalize = SCNAction.run { _ in
-                DispatchQueue.main.async { self.finalizeMove(pieceIndex: idx, toCol: toCol, toRow: toRow) }
-            }
+            let lift = SCNAction.move(by: SCNVector3(0, 0.8, 0), duration: 0.15); lift.timingMode = .easeOut
+            let glide = SCNAction.move(to: SCNVector3(targetPos.x, 0.85, targetPos.z), duration: 0.25); glide.timingMode = .easeInEaseOut
+            let drop = SCNAction.move(to: targetPos, duration: 0.15); drop.timingMode = .easeIn
+            let finalize = SCNAction.run { _ in DispatchQueue.main.async { self.finalizeMove(pieceIndex: idx, toCol: toCol, toRow: toRow) } }
             node.runAction(SCNAction.sequence([lift, glide, drop, finalize]))
         } else {
             finalizeMove(pieceIndex: idx, toCol: toCol, toRow: toRow)
@@ -415,7 +408,6 @@ class GameManager: ObservableObject {
         node.physicsBody = body
         body.applyForce(SCNVector3(Float.random(in: -8...8), Float.random(in: 6...12), Float.random(in: -8...8)), asImpulse: true)
         body.applyTorque(SCNVector4(1, 0, 1, 10), asImpulse: true)
-        
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             node.removeFromParentNode()
             self?.pieceNodes.removeValue(forKey: pieceId)
@@ -429,21 +421,14 @@ class GameManager: ObservableObject {
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            
             var bestScore = -999999
             var chosenPiece: PieceModel?
             var chosenMove: (col: Int, row: Int)?
             let myPieces = boardSnapshot.filter { $0.side == botSide }
-            
             let centerValues = [
-                [0, 0, 0, 0, 0, 0, 0, 0],
-                [0, 5, 5, 5, 5, 5, 5, 0],
-                [0, 5, 15, 20, 20, 15, 5, 0],
-                [0, 5, 20, 30, 30, 20, 5, 0],
-                [0, 5, 20, 30, 30, 20, 5, 0],
-                [0, 5, 15, 20, 20, 15, 5, 0],
-                [0, 5, 5, 5, 5, 5, 5, 0],
-                [0, 0, 0, 0, 0, 0, 0, 0]
+                [0, 0, 0, 0, 0, 0, 0, 0], [0, 5, 5, 5, 5, 5, 5, 0], [0, 5, 15, 20, 20, 15, 5, 0],
+                [0, 5, 20, 30, 30, 20, 5, 0], [0, 5, 20, 30, 30, 20, 5, 0], [0, 5, 15, 20, 20, 15, 5, 0],
+                [0, 5, 5, 5, 5, 5, 5, 0], [0, 0, 0, 0, 0, 0, 0, 0]
             ]
             
             for piece in myPieces.shuffled() {
@@ -452,16 +437,11 @@ class GameManager: ObservableObject {
                     var score = 0
                     if let target = boardSnapshot.first(where: { $0.col == m.col && $0.row == m.row }) {
                         switch target.type {
-                        case .pawn: score += 100
-                        case .knight, .bishop: score += 320
-                        case .rook: score += 500
-                        case .queen: score += 950
-                        case .king: score += 10000
+                        case .pawn: score += 100; case .knight, .bishop: score += 320
+                        case .rook: score += 500; case .queen: score += 950; case .king: score += 10000
                         }
                     }
-                    if currentDiff == .hard || currentDiff == .medium {
-                        score += centerValues[m.row][m.col]
-                    }
+                    if currentDiff == .hard || currentDiff == .medium { score += centerValues[m.row][m.col] }
                     if score > bestScore || chosenPiece == nil {
                         bestScore = score
                         chosenPiece = piece
@@ -471,7 +451,6 @@ class GameManager: ObservableObject {
             }
             
             while self.isAnimating { Thread.sleep(forTimeInterval: 0.1) }
-            
             DispatchQueue.main.async {
                 if let p = chosenPiece, let m = chosenMove {
                     self.selectedPiece = p
@@ -494,16 +473,16 @@ class GameManager: ObservableObject {
             if lower.contains("лучший") || lower.contains("ход") {
                 let current = self.pieces.filter { $0.side == self.currentTurn }
                 if let p = current.randomElement(), let m = self.calculateLegalMoves(for: p, in: self.pieces).randomElement() {
-                    reply = "Алгоритм подсказывает: \(p.type.rawValue) на \(self.colNames[m.col])\(m.row + 1)."
+                    reply = "Алгоритм советует: \(p.type.rawValue) на \(self.colNames[m.col])\(m.row + 1)."
                 } else {
-                    reply = "Укрепляй пешечную структуру и выводи легкие фигуры."
+                    reply = "Укрепляй пешки и выводи легкие фигуры."
                 }
             } else if lower.contains("оцен") || lower.contains("шанс") {
                 let w = self.pieces.filter { $0.side == .white }.count
                 let b = self.pieces.filter { $0.side == .black }.count
-                reply = "Материал на доске: Белые (\(w)) vs Черные (\(b))."
+                reply = "Материал на доске: Белые (\(w)) vs Черные (\(b)). Позиция в динамическом равновесии."
             } else {
-                reply = "Веди позиционную борьбу. Я слежу за игрой."
+                reply = "Веди позиционную игру, контролируй диагонали и рассчитывай ответы на два хода вперед."
             }
             self.aiChatMessages.append(("Гроссмейстер AI", reply))
             SoundEngine.shared.speak(reply, enabled: self.voiceEnabled)
@@ -577,9 +556,7 @@ class ChessPieceFactory {
         let mat = SCNMaterial()
         if let wood = TextureCache.wood {
             mat.diffuse.contents = wood
-            mat.multiply.contents = piece.side == .white ?
-                UIColor(red: 0.95, green: 0.88, blue: 0.76, alpha: 1.0) :
-                UIColor(red: 0.22, green: 0.14, blue: 0.08, alpha: 1.0)
+            mat.multiply.contents = piece.side == .white ? UIColor(red: 0.95, green: 0.88, blue: 0.76, alpha: 1.0) : UIColor(red: 0.22, green: 0.14, blue: 0.08, alpha: 1.0)
         } else {
             mat.diffuse.contents = piece.side == .white ? UIColor.white : UIColor.black
         }
@@ -637,7 +614,7 @@ class ChessPieceFactory {
     }
 }
 
-// MARK: - 3D Solar System View (ISOLATED)
+// MARK: - 3D Solar System View
 struct Chess3DContainer: UIViewRepresentable {
     @ObservedObject var gameManager: GameManager
     
@@ -671,8 +648,7 @@ struct Chess3DContainer: UIViewRepresentable {
         // Звезды
         let stars = SCNNode()
         for _ in 0..<160 {
-            // ИСПРАВЛЕНИЕ: Используем CGFloat.random
-            let star = SCNSphere(radius: CGFloat.random(in: 0.02...0.05))
+            let star = SCNSphere(radius: 0.03)
             let m = SCNMaterial(); m.emission.contents = UIColor.white
             star.materials = [m]
             let sn = SCNNode(geometry: star)
@@ -836,7 +812,7 @@ struct Chess3DContainer: UIViewRepresentable {
     }
 }
 
-// MARK: - AR Tabletop View (ISOLATED)
+// MARK: - AR Tabletop View
 struct ARChessContainer: UIViewRepresentable {
     @ObservedObject var gameManager: GameManager
     
@@ -993,40 +969,53 @@ struct ARChessContainer: UIViewRepresentable {
     }
 }
 
-// MARK: - Main UI View (Broken into Subviews to prevent compiler crash)
+// MARK: - Main UI View Architecture
 struct MainGameView: View {
     @StateObject private var gm = GameManager()
-    @State private var showSaves: Bool = false
-    @State private var showAIChat: Bool = false
-    @State private var showSettings: Bool = false
+    @State private var showSaves = false
+    @State private var showSettings = false
+    @State private var showAIChat = false
     
     let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
     
     var body: some View {
         ZStack {
-            if gm.isARMode {
-                ARChessContainer(gameManager: gm).ignoresSafeArea()
-            } else {
-                Chess3DContainer(gameManager: gm).ignoresSafeArea()
-            }
-            
-            if gm.inMenu {
-                MainMenuOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings, showAIChat: $showAIChat)
-            } else {
-                GameHUDOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings, showAIChat: $showAIChat)
-                if gm.isPaused {
-                    PauseMenuOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings)
-                }
-            }
+            sceneLayer
+            uiLayer
         }
         .onReceive(timer) { _ in gm.onClockTick() }
         .sheet(isPresented: $showSaves) { SavesModalView(gm: gm) }
         .sheet(isPresented: $showAIChat) { AIChatModalView(gm: gm) }
         .sheet(isPresented: $showSettings) { SettingsModalView(gm: gm) }
     }
+    
+    @ViewBuilder var sceneLayer: some View {
+        if gm.isARMode {
+            ARChessContainer(gameManager: gm).ignoresSafeArea()
+        } else {
+            Chess3DContainer(gameManager: gm).ignoresSafeArea()
+        }
+    }
+    
+    @ViewBuilder var uiLayer: some View {
+        if gm.inMenu {
+            MainMenuOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings, showAIChat: $showAIChat)
+        } else {
+            gameHUDAndPause
+        }
+    }
+    
+    @ViewBuilder var gameHUDAndPause: some View {
+        ZStack {
+            GameHUDOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings, showAIChat: $showAIChat)
+            if gm.isPaused {
+                PauseMenuOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings)
+            }
+        }
+    }
 }
 
-// MARK: - Subviews for UI Layers
+// MARK: - Subviews
 struct MainMenuOverlay: View {
     @ObservedObject var gm: GameManager
     @Binding var showSaves: Bool
@@ -1037,37 +1026,24 @@ struct MainMenuOverlay: View {
         ScrollView {
             VStack(spacing: 16) {
                 Text("VIBE CHESS 3D")
-                    .font(.system(size: 28, weight: .black, design: .monospaced))
-                    .foregroundColor(.cyan)
-                    .shadow(color: .cyan, radius: 10)
+                    .font(.system(size: 28, weight: .black, design: .monospaced)).foregroundColor(.cyan).shadow(color: .cyan, radius: 10)
                 
                 HStack {
-                    Button(action: { showSaves = true }) {
-                        Label("СЕЙВЫ", systemImage: "folder.fill").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.yellow)
-                    }
+                    Button(action: { showSaves = true }) { Label("СЕЙВЫ", systemImage: "folder.fill").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.yellow) }
                     Spacer()
-                    Button(action: { showSettings = true }) {
-                        Label("НАСТРОЙКИ", systemImage: "gearshape.fill").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.white)
-                    }
+                    Button(action: { showSettings = true }) { Label("НАСТРОЙКИ", systemImage: "gearshape.fill").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.white) }
                     Spacer()
-                    Button(action: { showAIChat = true }) {
-                        Label("ИИ ЧАТ", systemImage: "brain.head.profile").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.cyan)
-                    }
-                }
-                .padding(.horizontal, 4)
+                    Button(action: { showAIChat = true }) { Label("ИИ ЧАТ", systemImage: "brain.head.profile").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.cyan) }
+                }.padding(.horizontal, 4)
                 
                 VStack(alignment: .leading, spacing: 5) {
                     Text("КОНТРОЛЬ ВРЕМЕНИ:").font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundColor(.white.opacity(0.6))
-                    Picker("", selection: $gm.timeControl) {
-                        ForEach(TimeControl.allCases) { t in Text(t.rawValue).tag(t) }
-                    }.pickerStyle(.segmented)
+                    Picker("", selection: $gm.timeControl) { ForEach(TimeControl.allCases) { t in Text(t.rawValue).tag(t) } }.pickerStyle(.segmented)
                 }
                 
                 VStack(alignment: .leading, spacing: 5) {
                     Text("РЕЖИМ:").font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundColor(.white.opacity(0.6))
-                    Picker("", selection: $gm.mode) {
-                        ForEach(GameMode.allCases) { m in Text(m.rawValue).tag(m) }
-                    }.pickerStyle(.segmented)
+                    Picker("", selection: $gm.mode) { ForEach(GameMode.allCases) { m in Text(m.rawValue).tag(m) } }.pickerStyle(.segmented)
                 }
                 
                 VStack(alignment: .leading, spacing: 5) {
@@ -1083,18 +1059,10 @@ struct MainMenuOverlay: View {
                 }
                 
                 Button(action: { gm.startNewGame(mode: gm.mode, side: gm.playerSide, diff: gm.difficulty, time: gm.timeControl) }) {
-                    Text("НАЧАТЬ ПАРТИЮ")
-                        .font(.system(size: 15, weight: .bold, design: .monospaced))
-                        .foregroundColor(.black).frame(maxWidth: .infinity)
-                        .padding(.vertical, 14).background(Color.cyan).cornerRadius(12)
+                    Text("НАЧАТЬ ПАРТИЮ").font(.system(size: 15, weight: .bold, design: .monospaced)).foregroundColor(.black).frame(maxWidth: .infinity).padding(.vertical, 14).background(Color.cyan).cornerRadius(12)
                 }
             }
-            .padding(22)
-            .background(Color.black.opacity(0.85))
-            .cornerRadius(22)
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(Color.cyan.opacity(0.5), lineWidth: 1.5))
-            .padding(.horizontal, 22)
-            .padding(.top, 65)
+            .padding(22).background(Color.black.opacity(0.85)).cornerRadius(22).overlay(RoundedRectangle(cornerRadius: 22).stroke(Color.cyan.opacity(0.5), lineWidth: 1.5)).padding(.horizontal, 22).padding(.top, 65)
         }
     }
 }
@@ -1108,60 +1076,33 @@ struct GameHUDOverlay: View {
     var body: some View {
         VStack {
             HStack {
-                Button(action: { gm.isPaused = true }) {
-                    Image(systemName: "pause.fill").foregroundColor(.white).padding(9).background(Color.black.opacity(0.75)).clipShape(Circle())
-                }
+                Button(action: { gm.isPaused = true }) { Image(systemName: "pause.fill").foregroundColor(.white).padding(9).background(Color.black.opacity(0.75)).clipShape(Circle()) }
                 Spacer()
                 if gm.isClockActive {
                     HStack(spacing: 8) {
-                        Text("⚪️ \(formatSec(gm.whiteSeconds))")
-                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                            .foregroundColor(gm.currentTurn == .white ? .green : .white.opacity(0.6))
-                            .padding(.horizontal, 8).padding(.vertical, 5)
-                            .background(gm.currentTurn == .white ? Color.white.opacity(0.15) : Color.black.opacity(0.5)).cornerRadius(8)
-                        
-                        Text("⚫️ \(formatSec(gm.blackSeconds))")
-                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                            .foregroundColor(gm.currentTurn == .black ? .green : .white.opacity(0.6))
-                            .padding(.horizontal, 8).padding(.vertical, 5)
-                            .background(gm.currentTurn == .black ? Color.white.opacity(0.15) : Color.black.opacity(0.5)).cornerRadius(8)
+                        Text("⚪️ \(formatSec(gm.whiteSeconds))").font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundColor(gm.currentTurn == .white ? .green : .white.opacity(0.6)).padding(.horizontal, 8).padding(.vertical, 5).background(gm.currentTurn == .white ? Color.white.opacity(0.15) : Color.black.opacity(0.5)).cornerRadius(8)
+                        Text("⚫️ \(formatSec(gm.blackSeconds))").font(.system(size: 13, weight: .bold, design: .monospaced)).foregroundColor(gm.currentTurn == .black ? .green : .white.opacity(0.6)).padding(.horizontal, 8).padding(.vertical, 5).background(gm.currentTurn == .black ? Color.white.opacity(0.15) : Color.black.opacity(0.5)).cornerRadius(8)
                     }
                 } else {
-                    Text(gm.statusText).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.cyan)
-                        .padding(.horizontal, 10).padding(.vertical, 5).background(Color.black.opacity(0.8)).cornerRadius(8)
+                    Text(gm.statusText).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.cyan).padding(.horizontal, 10).padding(.vertical, 5).background(Color.black.opacity(0.8)).cornerRadius(8)
                 }
                 Spacer()
-                Button(action: { showAIChat = true }) {
-                    Image(systemName: "brain.head.profile").foregroundColor(.cyan).padding(9).background(Color.black.opacity(0.75)).clipShape(Circle())
-                }
+                Button(action: { showAIChat = true }) { Image(systemName: "brain.head.profile").foregroundColor(.cyan).padding(9).background(Color.black.opacity(0.75)).clipShape(Circle()) }
             }
             .padding(.horizontal, 14).padding(.top, 45)
-            
             Spacer()
-            
             HStack {
                 Button(action: { gm.performUndo() }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.uturn.backward")
-                        Text("Откат (\(gm.undoCount))")
-                    }
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(.yellow).padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Color.black.opacity(0.75)).cornerRadius(10)
+                    HStack(spacing: 4) { Image(systemName: "arrow.uturn.backward"); Text("Откат (\(gm.undoCount))") }.font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.yellow).padding(.horizontal, 12).padding(.vertical, 8).background(Color.black.opacity(0.75)).cornerRadius(10)
                 }
                 Spacer()
-                Text(gm.lastMoveNotation)
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(.cyan).padding(.horizontal, 10).padding(.vertical, 8)
-                    .background(Color.black.opacity(0.75)).cornerRadius(10)
+                Text(gm.lastMoveNotation).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.cyan).padding(.horizontal, 10).padding(.vertical, 8).background(Color.black.opacity(0.75)).cornerRadius(10)
             }
             .padding(.horizontal, 16).padding(.bottom, 25)
         }
     }
     
-    private func formatSec(_ s: Int) -> String {
-        return String(format: "%02d:%02d", s / 60, s % 60)
-    }
+    private func formatSec(_ s: Int) -> String { return String(format: "%02d:%02d", s / 60, s % 60) }
 }
 
 struct PauseMenuOverlay: View {
@@ -1180,8 +1121,7 @@ struct PauseMenuOverlay: View {
                 Button("Перезапуск") { gm.isPaused = false; gm.resetBoard() }.buttonStyle(.bordered)
                 Button("Выход в меню") { gm.isPaused = false; gm.inMenu = true }.foregroundColor(.red)
             }
-            .padding(26).background(Color.black.opacity(0.95)).cornerRadius(20)
-            .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.2), lineWidth: 1))
+            .padding(26).background(Color.black.opacity(0.95)).cornerRadius(20).overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.2), lineWidth: 1))
         }
     }
 }
@@ -1220,9 +1160,7 @@ struct AIChatModalView: View {
                 }
                 HStack {
                     TextField("Сообщение ИИ...", text: $inputMessage).textFieldStyle(.roundedBorder)
-                    Button(action: { gm.sendUserMessage(inputMessage); inputMessage = "" }) {
-                        Image(systemName: "arrow.up.circle.fill").font(.title2).foregroundColor(.cyan)
-                    }
+                    Button(action: { gm.sendUserMessage(inputMessage); inputMessage = "" }) { Image(systemName: "arrow.up.circle.fill").font(.title2).foregroundColor(.cyan) }
                 }.padding(.horizontal).padding(.bottom, 10).padding(.top, 4)
             }
             .navigationTitle("AI Каспаров-9000")
@@ -1243,9 +1181,7 @@ struct SettingsModalView: View {
                     Toggle("Голос комментатора", isOn: $gm.voiceEnabled)
                 }
                 Section(header: Text("Сложность Бота")) {
-                    Picker("Сложность", selection: $gm.difficulty) {
-                        ForEach(BotDifficulty.allCases) { d in Text(d.rawValue).tag(d) }
-                    }
+                    Picker("Сложность", selection: $gm.difficulty) { ForEach(BotDifficulty.allCases) { d in Text(d.rawValue).tag(d) } }
                 }
             }
             .navigationTitle("Настройки")
