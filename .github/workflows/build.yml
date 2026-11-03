@@ -41,7 +41,7 @@ jobs:
           python3 - << 'EOF'
           import wave, struct, math, random
 
-          # 1. Генерация 3 тяжелых аудио-треков космоса (~180 МБ суммарно)
+          # 1. Генерация 3 тяжелых аудио-треков космоса (~180 МБ)
           def create_wav(filename, duration, gen):
               rate = 44100
               with wave.open(filename, 'w') as w:
@@ -53,11 +53,11 @@ jobs:
                       frames.extend(struct.pack('<hh', max(-32767, min(32767, int(l * 32767))), max(-32767, min(32767, int(r * 32767)))))
                   w.writeframes(frames)
 
-          print("Generating Track 1: Cosmic Drone (60MB)...")
+          print("Generating Track 1: Cosmic Drone...")
           create_wav("Sources/ambient.wav", 180.0, lambda t, i: (math.sin(2*math.pi*55.0*t)*0.25, math.sin(2*math.pi*82.4*t)*0.2))
-          print("Generating Track 2: Deep Void (60MB)...")
+          print("Generating Track 2: Deep Void...")
           create_wav("Sources/space_deep.wav", 180.0, lambda t, i: (math.sin(2*math.pi*65.4*t)*0.25, math.sin(2*math.pi*32.7*t)*0.3))
-          print("Generating Track 3: Celestial Choir (60MB)...")
+          print("Generating Track 3: Celestial Choir...")
           create_wav("Sources/celestial.wav", 180.0, lambda t, i: (math.sin(2*math.pi*110.0*t + math.sin(t*0.2))*0.2, math.sin(2*math.pi*164.8*t)*0.2))
 
           # Звуки
@@ -67,9 +67,9 @@ jobs:
           create_wav("Sources/alarm.wav", 1.2, lambda t, i: (math.sin(2*math.pi*(950.0 if int(t*8)%2==0 else 600.0)*t)*0.8, math.sin(2*math.pi*(950.0 if int(t*8)%2==0 else 600.0)*t)*0.8))
           create_wav("Sources/laser.wav", 0.5, lambda t, i: (math.sin(2*math.pi*(1600.0 - t*2800.0)*t)*math.exp(-t*5.0)*0.9, math.sin(2*math.pi*(1600.0 - t*2800.0)*t)*math.exp(-t*5.0)*0.9))
 
-          # 2. Несжатые 2K карты текстур и поверхностей планет (~120 МБ)
+          # 2. Несжатые 2K карты текстур дерева и мрамора (~120 МБ)
           w, h = 2048, 2048
-          print("Generating 2K Wood Map...")
+          print("Generating 2K Wood Texture...")
           pixels_w = bytearray(w * h * 3)
           for y in range(h):
               for x in range(w):
@@ -82,7 +82,7 @@ jobs:
           with open('wood.ppm', 'wb') as f:
               f.write(f'P6\n{w} {h}\n255\n'.encode('ascii') + pixels_w)
 
-          print("Generating 2K Marble Map...")
+          print("Generating 2K Marble Texture...")
           pixels_m = bytearray(w * h * 3)
           for y in range(h):
               for x in range(w):
@@ -161,15 +161,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="v1.4.${{ github.run_number }}"
+          VERSION="v1.5.${{ github.run_number }}"
           gh release create "$VERSION" VibeChess.ipa \
-            --title "VibeChess $VERSION (300MB Ultra Edition)" \
-            --notes "🪐 Ультимативный фотореалистичный релиз VibeChess 3D (300MB):
-            - 3 тяжелых аудио-трека глубокого космоса
-            - 2K текстуры дерева и мрамора
-            - Планеты с кольцами и космические световые лучи
-            - Интерактивная 3D-доска прямо в главном меню
-            - Меню паузы во время игры
-            - Полноценный чат с ИИ-гроссмейстером (вводи любой текст!)
-            - 4 скина для фигур (Золото, Кристалл, Дамасская сталь, Киберпанк)
-            - AR-режим на реальном столе с LiDAR"
+            --title "VibeChess $VERSION (Stable 300MB Photoreal)" \
+            --notes "🚀 Финальный релиз VibeChess 3D:
+            - Убран столб света, мешавший обзору
+            - В космосе добавлена гигантская планета с кольцами
+            - Фотореалистичные деревянные фигуры (Орех и Клен)
+            - Те же детализированные 3D-фигуры в AR-режиме
+            - Умный гроссмейстер ИИ (Minimax + AlphaBeta)
+            - Полная защита от вылетов и сохранение всех настроек"
