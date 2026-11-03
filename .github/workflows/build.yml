@@ -16,7 +16,7 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_16.1.app || sudo xcode-select -s /Applications/Xcode_16.2.app || true
           xcodebuild -version
 
-      - name: Generate High-Res Textures, Audio & Icons
+      - name: Generate Solar System Assets & Audio
         run: |
           mkdir -p Sources/Assets.xcassets/AppIcon.appiconset
 
@@ -41,7 +41,7 @@ jobs:
           python3 - << 'EOF'
           import wave, struct, math, random
 
-          # Аудио-пак
+          # 1. Фоновый космический эмбиент
           def create_wav(filename, duration, gen):
               rate = 44100
               with wave.open(filename, 'w') as w:
@@ -55,12 +55,11 @@ jobs:
 
           print("Generating Sound Pack...")
           create_wav("Sources/ambient.wav", 120.0, lambda t, i: (math.sin(2*math.pi*55.0*t)*0.2, math.sin(2*math.pi*82.4*t)*0.18))
-          create_wav("Sources/move.wav", 0.35, lambda t, i: (math.sin(2*math.pi*150.0*t)*math.exp(-t*30.0)*0.9, math.sin(2*math.pi*150.0*t)*math.exp(-t*30.0)*0.9))
-          create_wav("Sources/capture.wav", 0.5, lambda t, i: ((math.sin(2*math.pi*85.0*t)+(random.random()*2-1)*0.35)*math.exp(-t*14.0), (math.sin(2*math.pi*85.0*t)+(random.random()*2-1)*0.35)*math.exp(-t*14.0)))
-          create_wav("Sources/select.wav", 0.12, lambda t, i: (math.sin(2*math.pi*880.0*t)*math.exp(-t*50.0)*0.7, math.sin(2*math.pi*880.0*t)*math.exp(-t*50.0)*0.7))
+          create_wav("Sources/move.wav", 0.25, lambda t, i: (math.sin(2*math.pi*160.0*t)*math.exp(-t*35.0)*0.9, math.sin(2*math.pi*160.0*t)*math.exp(-t*35.0)*0.9))
+          create_wav("Sources/capture.wav", 0.45, lambda t, i: ((math.sin(2*math.pi*90.0*t)+(random.random()*2-1)*0.3)*math.exp(-t*15.0), (math.sin(2*math.pi*90.0*t)+(random.random()*2-1)*0.3)*math.exp(-t*15.0)))
           create_wav("Sources/click.wav", 0.08, lambda t, i: (math.sin(2*math.pi*950.0*t)*math.exp(-t*60.0)*0.8, math.sin(2*math.pi*950.0*t)*math.exp(-t*60.0)*0.8))
 
-          # Текстуры дерева и мрамора
+          # 2. Текстуры дерева и мрамора
           w, h = 1024, 1024
           pixels_w = bytearray(w * h * 3)
           for y in range(h):
@@ -86,7 +85,7 @@ jobs:
           with open('marble.ppm', 'wb') as f:
               f.write(f'P6\n{w} {h}\n255\n'.encode('ascii') + pixels_m)
 
-          # Иконка
+          # Иконка Солнечной Системы
           pixels_i = bytearray(w * h * 3)
           for y in range(h):
               for x in range(w):
@@ -151,13 +150,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="v1.7.${{ github.run_number }}"
+          VERSION="v1.8.${{ github.run_number }}"
           gh release create "$VERSION" VibeChess.ipa \
-            --title "VibeChess $VERSION (Cinematic Space & Smooth Physics)" \
-            --notes "🪐 Ультимативный релиз VibeChess:
-            - Устранены лаги и вылеты: фигуры больше не пересоздаются каждую секунду
-            - Плавная физическая анимация перемещения фигур по дуге
-            - Космос: Сатурн с кольцами и Черная Дыра с аккреционным диском прямо в кадре
-            - Студийное трехточечное освещение и мягкие тени
-            - Яркие, премиальные фигуры из полированной слоновой кости и темного эбена
-            - Честные правила классических шахмат с часами"
+            --title "VibeChess $VERSION (Solar System & Pure Stability)" \
+            --notes "♟️ Идеально стабильный релиз VibeChess:
+            - Железобетонная очередь ходов (ИИ не ходит одновременно с игроком)
+            - Солнечная система: Огромное Солнце, Земля и Марс в космосе
+            - Элегантные 3D-точки для подсказок ходов вместо светящихся квадратов
+            - Панель нотации (истории последнего хода)
+            - ИИ-ассистент с быстрыми кнопками и свободным вводом
+            - 100% правила FIDE и плавная анимация фигур по дуге"
