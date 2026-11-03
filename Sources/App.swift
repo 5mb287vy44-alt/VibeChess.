@@ -429,6 +429,7 @@ class GameManager: ObservableObject {
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
+            
             var bestScore = -999999
             var chosenPiece: PieceModel?
             var chosenMove: (col: Int, row: Int)?
@@ -470,6 +471,7 @@ class GameManager: ObservableObject {
             }
             
             while self.isAnimating { Thread.sleep(forTimeInterval: 0.1) }
+            
             DispatchQueue.main.async {
                 if let p = chosenPiece, let m = chosenMove {
                     self.selectedPiece = p
@@ -492,9 +494,9 @@ class GameManager: ObservableObject {
             if lower.contains("лучший") || lower.contains("ход") {
                 let current = self.pieces.filter { $0.side == self.currentTurn }
                 if let p = current.randomElement(), let m = self.calculateLegalMoves(for: p, in: self.pieces).randomElement() {
-                    reply = "Алгоритм советует: \(p.type.rawValue) на \(self.colNames[m.col])\(m.row + 1)."
+                    reply = "Алгоритм подсказывает: \(p.type.rawValue) на \(self.colNames[m.col])\(m.row + 1)."
                 } else {
-                    reply = "Укрепляй пешки и выводи легкие фигуры."
+                    reply = "Укрепляй пешечную структуру и выводи легкие фигуры."
                 }
             } else if lower.contains("оцен") || lower.contains("шанс") {
                 let w = self.pieces.filter { $0.side == .white }.count
@@ -635,7 +637,7 @@ class ChessPieceFactory {
     }
 }
 
-// MARK: - 3D Solar System View
+// MARK: - 3D Solar System View (ISOLATED)
 struct Chess3DContainer: UIViewRepresentable {
     @ObservedObject var gameManager: GameManager
     
@@ -666,9 +668,10 @@ struct Chess3DContainer: UIViewRepresentable {
         scene.rootNode.addChildNode(planetNode)
         planetNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.4, z: 0, duration: 25)))
         
-        // Звезды (исправлен тип CGFloat)
+        // Звезды
         let stars = SCNNode()
         for _ in 0..<160 {
+            // ИСПРАВЛЕНИЕ: Используем CGFloat.random
             let star = SCNSphere(radius: CGFloat.random(in: 0.02...0.05))
             let m = SCNMaterial(); m.emission.contents = UIColor.white
             star.materials = [m]
@@ -833,7 +836,7 @@ struct Chess3DContainer: UIViewRepresentable {
     }
 }
 
-// MARK: - AR Tabletop View
+// MARK: - AR Tabletop View (ISOLATED)
 struct ARChessContainer: UIViewRepresentable {
     @ObservedObject var gameManager: GameManager
     
@@ -990,7 +993,7 @@ struct ARChessContainer: UIViewRepresentable {
     }
 }
 
-// MARK: - Refactored Main UI View
+// MARK: - Main UI View (Broken into Subviews to prevent compiler crash)
 struct MainGameView: View {
     @StateObject private var gm = GameManager()
     @State private var showSaves: Bool = false
@@ -1001,14 +1004,18 @@ struct MainGameView: View {
     
     var body: some View {
         ZStack {
-            sceneLayer
+            if gm.isARMode {
+                ARChessContainer(gameManager: gm).ignoresSafeArea()
+            } else {
+                Chess3DContainer(gameManager: gm).ignoresSafeArea()
+            }
             
             if gm.inMenu {
-                menuLayer
+                MainMenuOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings, showAIChat: $showAIChat)
             } else {
-                hudLayer
+                GameHUDOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings, showAIChat: $showAIChat)
                 if gm.isPaused {
-                    pauseLayer
+                    PauseMenuOverlay(gm: gm, showSaves: $showSaves, showSettings: $showSettings)
                 }
             }
         }
@@ -1017,17 +1024,16 @@ struct MainGameView: View {
         .sheet(isPresented: $showAIChat) { AIChatModalView(gm: gm) }
         .sheet(isPresented: $showSettings) { SettingsModalView(gm: gm) }
     }
+}
+
+// MARK: - Subviews for UI Layers
+struct MainMenuOverlay: View {
+    @ObservedObject var gm: GameManager
+    @Binding var showSaves: Bool
+    @Binding var showSettings: Bool
+    @Binding var showAIChat: Bool
     
-    // MARK: - UI Layers
-    @ViewBuilder private var sceneLayer: some View {
-        if gm.isARMode {
-            ARChessContainer(gameManager: gm).ignoresSafeArea()
-        } else {
-            Chess3DContainer(gameManager: gm).ignoresSafeArea()
-        }
-    }
-    
-    @ViewBuilder private var menuLayer: some View {
+    var body: some View {
         ScrollView {
             VStack(spacing: 16) {
                 Text("VIBE CHESS 3D")
@@ -1091,25 +1097,30 @@ struct MainGameView: View {
             .padding(.top, 65)
         }
     }
+}
+
+struct GameHUDOverlay: View {
+    @ObservedObject var gm: GameManager
+    @Binding var showSaves: Bool
+    @Binding var showSettings: Bool
+    @Binding var showAIChat: Bool
     
-    @ViewBuilder private var hudLayer: some View {
+    var body: some View {
         VStack {
             HStack {
                 Button(action: { gm.isPaused = true }) {
                     Image(systemName: "pause.fill").foregroundColor(.white).padding(9).background(Color.black.opacity(0.75)).clipShape(Circle())
                 }
-                
                 Spacer()
-                
                 if gm.isClockActive {
                     HStack(spacing: 8) {
-                        Text("⚪️ \(formatSeconds(gm.whiteSeconds))")
+                        Text("⚪️ \(formatSec(gm.whiteSeconds))")
                             .font(.system(size: 13, weight: .bold, design: .monospaced))
                             .foregroundColor(gm.currentTurn == .white ? .green : .white.opacity(0.6))
                             .padding(.horizontal, 8).padding(.vertical, 5)
                             .background(gm.currentTurn == .white ? Color.white.opacity(0.15) : Color.black.opacity(0.5)).cornerRadius(8)
                         
-                        Text("⚫️ \(formatSeconds(gm.blackSeconds))")
+                        Text("⚫️ \(formatSec(gm.blackSeconds))")
                             .font(.system(size: 13, weight: .bold, design: .monospaced))
                             .foregroundColor(gm.currentTurn == .black ? .green : .white.opacity(0.6))
                             .padding(.horizontal, 8).padding(.vertical, 5)
@@ -1119,9 +1130,7 @@ struct MainGameView: View {
                     Text(gm.statusText).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.cyan)
                         .padding(.horizontal, 10).padding(.vertical, 5).background(Color.black.opacity(0.8)).cornerRadius(8)
                 }
-                
                 Spacer()
-                
                 Button(action: { showAIChat = true }) {
                     Image(systemName: "brain.head.profile").foregroundColor(.cyan).padding(9).background(Color.black.opacity(0.75)).clipShape(Circle())
                 }
@@ -1140,21 +1149,27 @@ struct MainGameView: View {
                     .foregroundColor(.yellow).padding(.horizontal, 12).padding(.vertical, 8)
                     .background(Color.black.opacity(0.75)).cornerRadius(10)
                 }
-                
                 Spacer()
-                
                 Text(gm.lastMoveNotation)
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(.cyan)
-                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .foregroundColor(.cyan).padding(.horizontal, 10).padding(.vertical, 8)
                     .background(Color.black.opacity(0.75)).cornerRadius(10)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 25)
+            .padding(.horizontal, 16).padding(.bottom, 25)
         }
     }
     
-    @ViewBuilder private var pauseLayer: some View {
+    private func formatSec(_ s: Int) -> String {
+        return String(format: "%02d:%02d", s / 60, s % 60)
+    }
+}
+
+struct PauseMenuOverlay: View {
+    @ObservedObject var gm: GameManager
+    @Binding var showSaves: Bool
+    @Binding var showSettings: Bool
+    
+    var body: some View {
         ZStack {
             Color.black.opacity(0.8).ignoresSafeArea()
             VStack(spacing: 16) {
@@ -1169,14 +1184,9 @@ struct MainGameView: View {
             .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.2), lineWidth: 1))
         }
     }
-    
-    private func formatSeconds(_ s: Int) -> String {
-        let min = s / 60; let sec = s % 60
-        return String(format: "%02d:%02d", min, sec)
-    }
 }
 
-// MARK: - AI Chatbot Modal
+// MARK: - Modals
 struct AIChatModalView: View {
     @ObservedObject var gm: GameManager
     @Environment(\.dismiss) var dismiss
@@ -1201,24 +1211,19 @@ struct AIChatModalView: View {
                     }
                     .padding()
                 }
-                
                 Divider()
-                
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         Button("🧠 Лучший ход?") { gm.sendUserMessage("Какой ход лучший?") }.buttonStyle(.borderedTinted).tint(.cyan)
                         Button("⚖️ Оцени позицию") { gm.sendUserMessage("Оцени шансы") }.buttonStyle(.borderedTinted).tint(.cyan)
-                    }
-                    .padding(.horizontal)
+                    }.padding(.horizontal)
                 }
-                
                 HStack {
                     TextField("Сообщение ИИ...", text: $inputMessage).textFieldStyle(.roundedBorder)
                     Button(action: { gm.sendUserMessage(inputMessage); inputMessage = "" }) {
                         Image(systemName: "arrow.up.circle.fill").font(.title2).foregroundColor(.cyan)
                     }
-                }
-                .padding(.horizontal).padding(.bottom, 10).padding(.top, 4)
+                }.padding(.horizontal).padding(.bottom, 10).padding(.top, 4)
             }
             .navigationTitle("AI Каспаров-9000")
             .navigationBarItems(trailing: Button("Закрыть") { dismiss() })
@@ -1226,11 +1231,9 @@ struct AIChatModalView: View {
     }
 }
 
-// MARK: - Settings Modal
 struct SettingsModalView: View {
     @ObservedObject var gm: GameManager
     @Environment(\.dismiss) var dismiss
-    
     var body: some View {
         NavigationView {
             Form {
@@ -1251,11 +1254,9 @@ struct SettingsModalView: View {
     }
 }
 
-// MARK: - Saves Modal View
 struct SavesModalView: View {
     @ObservedObject var gm: GameManager
     @Environment(\.dismiss) var dismiss
-    
     var body: some View {
         NavigationView {
             List {
