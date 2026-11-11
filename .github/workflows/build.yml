@@ -1,13 +1,5 @@
-name: Build WAVE IPA & Release
-on:
-  push:
-    paths:
-      - 'Sources/App.swift'
-  workflow_dispatch:
-
-concurrency:
-  group: build-wave
-  cancel-in-progress: true
+name: Build IPA & Release
+on: [push, workflow_dispatch]
 
 permissions:
   contents: write
@@ -19,55 +11,274 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16
+      - name: Select Xcode 26
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.1.app || sudo xcode-select -s /Applications/Xcode_16.2.app || true
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | grep -vi candidate | sort -V | tail -1)
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
           xcodebuild -version
 
-      - name: Download three.js
-        run: |
-          curl -fsSL https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js -o Sources/three.min.js
-          ls -la Sources
-
-      - name: Generate App Icon
+      - name: Generate textures, sounds and icon
         run: |
           mkdir -p Sources/Assets.xcassets/AppIcon.appiconset
+
           cat << 'EOF' > Sources/Assets.xcassets/Contents.json
           { "info" : { "author" : "xcode", "version" : 1 } }
           EOF
-          cat << 'EOF' > Sources/Assets.xcassets/AppIcon.appiconset/Contents.json
-          { "images" : [ { "idiom" : "universal", "platform" : "ios", "size" : "1024x1024", "filename" : "icon_1024.png" } ], "info" : { "author" : "xcode", "version" : 1 } }
-          EOF
-          python3 - << 'EOF'
-          import math
-          w = 1024
-          px = bytearray(w * w * 3)
-          for y in range(w):
-              for x in range(w):
-                  d = math.hypot(x - 512, y - 512)
-                  i = (y * w + x) * 3
-                  r, g, b = 10, 10, 14
-                  if y % 14 < 3:
-                      r, g, b = 4, 4, 6
-                  glow = max(0.0, 1.0 - d / 430.0)
-                  r += int(120 * glow * glow)
-                  if d < 190:
-                      r, g, b = 215, 25, 25
-                  px[i] = min(255, r); px[i+1] = min(255, g); px[i+2] = min(255, b)
-          open('icon.ppm', 'wb').write(f'P6\n{w} {w}\n255\n'.encode() + px)
-          EOF
-          sips -s format png icon.ppm --out Sources/Assets.xcassets/AppIcon.appiconset/icon_1024.png
-          rm icon.ppm
 
-      - name: Generate Xcode Project
+          cat << 'EOF' > Sources/Assets.xcassets/AppIcon.appiconset/Contents.json
+          {
+            "images" : [
+              {
+                "idiom" : "universal",
+                "platform" : "ios",
+                "size" : "1024x1024",
+                "filename" : "icon_1024.png"
+              }
+            ],
+            "info" : { "author" : "xcode", "version" : 1 }
+          }
+          EOF
+
+          export PYTHONIOENCODING=utf-8
+          python3 - << 'EOF'
+          import wave, struct, math, random, zlib, os
+
+          random.seed(11)
+          OUT = os.environ.get("OUT_DIR", "Sources")
+          ICON = os.environ.get("ICON_PATH", OUT + "/Assets.xcassets/AppIcon.appiconset/icon_1024.png")
+
+          # ---------- PNG writer (без внешних утилит) ----------
+          def write_png(path, w, h, rgb):
+              raw = bytearray()
+              stride = w * 3
+              for y in range(h):
+                  raw.append(0)
+                  raw.extend(rgb[y * stride:(y + 1) * stride])
+              def chunk(t, d):
+                  c = struct.pack('>I', len(d)) + t + d
+                  return c + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+              data = b'\x89PNG\r\n\x1a\n'
+              data += chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+              data += chunk(b'IDAT', zlib.compress(bytes(raw), 6))
+              data += chunk(b'IEND', b'')
+              with open(path, 'wb') as f:
+                  f.write(data)
+
+          # ---------- шум (бесшовный) ----------
+          def hash2(ix, iy, seed):
+              n = (ix * 374761393 + iy * 668265263 + seed * 144665) & 0xffffffff
+              n = ((n ^ (n >> 13)) * 1274126177) & 0xffffffff
+              n = n ^ (n >> 16)
+              return (n & 0xffff) / 65535.0
+
+          def vnoise(x, y, period, seed):
+              xi = math.floor(x); yi = math.floor(y)
+              xf = x - xi; yf = y - yi
+              x0 = int(xi) % period; y0 = int(yi) % period
+              x1 = (x0 + 1) % period; y1 = (y0 + 1) % period
+              u = xf * xf * (3 - 2 * xf); v = yf * yf * (3 - 2 * yf)
+              a = hash2(x0, y0, seed); b = hash2(x1, y0, seed)
+              c = hash2(x0, y1, seed); d = hash2(x1, y1, seed)
+              return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v
+
+          def fbm(u, v, base, octaves, seed):
+              s = 0.0; amp = 0.5; per = base; tot = 0.0
+              for o in range(octaves):
+                  s += amp * vnoise(u * per, v * per, per, seed + o * 7)
+                  tot += amp; per *= 2; amp *= 0.5
+              return s / tot
+
+          def clamp8(v):
+              return 0 if v < 0 else (255 if v > 255 else int(v))
+
+          def lerp(a, b, t):
+              return a + (b - a) * t
+
+          def make_tex(name, w, h, fn):
+              px = bytearray(w * h * 3)
+              for y in range(h):
+                  v = y / h
+                  for x in range(w):
+                      u = x / w
+                      r, g, b = fn(u, v, x, y)
+                      i = (y * w + x) * 3
+                      px[i] = clamp8(r); px[i + 1] = clamp8(g); px[i + 2] = clamp8(b)
+              write_png(OUT + "/" + name + ".png", w, h, px)
+
+          # ---------- текстуры доски ----------
+          def wood(u, v, x, y):
+              warp = fbm(u, v, 2, 3, 11)
+              g = 0.5 + 0.5 * math.sin(2 * math.pi * (v * 14 + warp * 4.0))
+              fine = fbm(u, v, 24, 2, 5)
+              t = 0.25 + 0.55 * g + 0.25 * fine
+              r = lerp(86, 168, t); gg = lerp(50, 108, t); b = lerp(28, 62, t)
+              sp = (hash2(x, y, 3) - 0.5) * 10
+              return r + sp, gg + sp * 0.8, b + sp * 0.6
+
+          def marble(u, v, x, y):
+              w = fbm(u, v, 3, 4, 21)
+              t = abs(math.sin(2 * math.pi * (u * 2 + v + w * 2.6)))
+              vein = (1.0 - t) ** 7
+              soft = fbm(u, v, 6, 3, 31)
+              base = 232 + (soft - 0.5) * 22
+              r = base - vein * 70; g = base - vein * 66; b = base - 6 - vein * 58
+              sp = (hash2(x, y, 9) - 0.5) * 5
+              return r + sp, g + sp, b + sp
+
+          # ---------- планеты ----------
+          def earth(u, v, x, y):
+              lat = abs(v - 0.5) * 2.0
+              land = fbm(u, v, 4, 5, 41) - 0.10 * lat
+              cloud = fbm(u + 0.13, v, 6, 4, 77)
+              if lat > 0.86:
+                  r, g, b = 238, 242, 248
+              elif land > 0.52:
+                  h = (land - 0.52) * 3.2
+                  if lat > 0.62 or h > 0.9:
+                      r, g, b = 170, 150, 120
+                  else:
+                      r, g, b = lerp(40, 120, h), lerp(120, 105, h), lerp(52, 60, h)
+              else:
+                  d = land / 0.52
+                  r, g, b = lerp(8, 24, d), lerp(34, 92, d), lerp(104, 170, d)
+              c = max(0.0, (cloud - 0.55) * 3.0)
+              c = min(1.0, c)
+              return lerp(r, 255, c * 0.85), lerp(g, 255, c * 0.85), lerp(b, 255, c * 0.85)
+
+          def mars(u, v, x, y):
+              n = fbm(u, v, 5, 5, 61)
+              lat = abs(v - 0.5) * 2.0
+              r = lerp(120, 205, n); g = lerp(50, 105, n); b = lerp(30, 70, n)
+              if lat > 0.93:
+                  r, g, b = 240, 235, 235
+              return r, g, b
+
+          def saturn(u, v, x, y):
+              band = math.sin(v * 70 + fbm(u, v, 3, 3, 81) * 5) * 0.5 + 0.5
+              n = fbm(u, v, 8, 2, 91)
+              t = 0.35 + 0.45 * band + 0.2 * n
+              return lerp(150, 232, t), lerp(120, 196, t), lerp(80, 140, t)
+
+          def sun(u, v, x, y):
+              n = fbm(u, v, 6, 5, 101)
+              t = n
+              return lerp(230, 255, t), lerp(110, 215, t), lerp(10, 90, t)
+
+          def moon(u, v, x, y):
+              n = fbm(u, v, 6, 5, 121)
+              c = lerp(110, 205, n)
+              return c, c, c * 0.97
+
+          print("Textures...")
+          make_tex("wood_texture", 512, 512, wood)
+          make_tex("marble_texture", 512, 512, marble)
+          make_tex("earth_texture", 512, 256, earth)
+          make_tex("mars_texture", 256, 128, mars)
+          make_tex("saturn_texture", 256, 128, saturn)
+          make_tex("sun_texture", 256, 128, sun)
+          make_tex("moon_texture", 256, 128, moon)
+
+          # ---------- иконка 1024 ----------
+          print("Icon...")
+          def icon(u, v, x, y):
+              nx = (x - 512) / 512.0; ny = (y - 512) / 512.0
+              dist = math.sqrt(nx * nx + ny * ny)
+              r = 10 + (1 - dist) * 14; g = 16 + (1 - dist) * 34; b = 40 + (1 - dist) * 80
+              # планета-кольцо на фоне
+              pd = math.sqrt((x - 760) ** 2 + (y - 270) ** 2)
+              if pd < 120:
+                  k = 1 - pd / 120.0
+                  r, g, b = lerp(r, 230, 0.5 + 0.4 * k), lerp(g, 150, 0.5 + 0.4 * k), lerp(b, 60, 0.4)
+              dx = abs(x - 512)
+              king = ((790 <= y <= 840 and dx < 230) or (700 <= y < 790 and dx < 150 - (790 - y) * 0.1)
+                      or (440 <= y < 700 and dx < 62 + (y - 440) * 0.26) or (400 <= y < 440 and dx < 110)
+                      or ((x - 512) ** 2 + (y - 350) ** 2 < 62 ** 2) or (205 <= y <= 330 and dx < 20)
+                      or (235 <= y <= 270 and dx < 58))
+              if king:
+                  f = 1.0 - (y - 205) / 640.0
+                  r, g, b = 255, 190 + f * 55, 60 + f * 70
+              return r, g, b
+
+          make_tex("icon_tmp", 1024, 1024, icon)
+          os.makedirs(os.path.dirname(ICON), exist_ok=True)
+          os.replace(OUT + "/icon_tmp.png", ICON)
+
+          # ---------- звуки ----------
+          def create_wav(filename, duration, gen, rate=44100):
+              n = int(rate * duration)
+              frames = bytearray()
+              for i in range(n):
+                  l, r = gen(i / rate)
+                  l = max(-1.0, min(1.0, l)); r = max(-1.0, min(1.0, r))
+                  frames += struct.pack('<hh', int(l * 32000), int(r * 32000))
+              with wave.open(OUT + "/" + filename, 'w') as w:
+                  w.setnchannels(2); w.setsampwidth(2); w.setframerate(rate)
+                  w.writeframes(bytes(frames))
+
+          TAU = 2 * math.pi
+          def noise(): return random.random() * 2 - 1
+
+          def move_s(t):
+              e = math.exp(-t * 30)
+              s = (math.sin(TAU * 190 * t) * 0.55 + math.sin(TAU * 96 * t) * 0.5 + noise() * 0.25 * math.exp(-t * 110)) * e
+              return s, s
+
+          def capture_s(t):
+              e = math.exp(-t * 13)
+              s = (math.sin(TAU * 80 * t) * 0.6 + noise() * 0.4 * math.exp(-t * 35) + math.sin(TAU * 150 * t) * 0.3) * e
+              return s, s
+
+          def select_s(t):
+              s = math.sin(TAU * 1200 * t) * math.exp(-t * 60) * 0.35
+              return s, s
+
+          def click_s(t):
+              s = math.sin(TAU * 880 * t) * math.exp(-t * 75) * 0.35
+              return s, s
+
+          def check_s(t):
+              f = 660 if t < 0.16 else 880
+              tt = t if t < 0.16 else t - 0.16
+              s = math.sin(TAU * f * tt) * math.exp(-tt * 9) * 0.45
+              return s, s
+
+          def win_s(t):
+              notes = [523.25, 659.25, 783.99, 1046.5]
+              k = min(3, int(t / 0.18))
+              tt = t - k * 0.18
+              s = (math.sin(TAU * notes[k] * tt) + 0.3 * math.sin(TAU * notes[k] * 2 * tt)) * math.exp(-tt * 3.2) * 0.35
+              return s, s
+
+          def ambient_s(t):
+              lfo = 0.6 + 0.4 * math.sin(TAU * 0.1 * t)
+              lfo2 = 0.5 + 0.5 * math.sin(TAU * 0.2 * t)
+              a = math.sin(TAU * 55.0 * t) * 0.20
+              b = math.sin(TAU * 82.5 * t) * 0.13 * lfo
+              c = math.sin(TAU * 110.0 * t) * 0.07 * lfo2
+              d = math.sin(TAU * 165.0 * t) * 0.04 * (1 - lfo2)
+              return a + b + c, a + d + c * 0.8
+
+          print("Sounds...")
+          create_wav("move.wav", 0.2, move_s)
+          create_wav("capture.wav", 0.4, capture_s)
+          create_wav("select.wav", 0.08, select_s)
+          create_wav("click.wav", 0.06, click_s)
+          create_wav("check.wav", 0.6, check_s)
+          create_wav("win.wav", 1.2, win_s)
+          create_wav("ambient.wav", 30.0, ambient_s, rate=22050)
+          print("Done")
+
+          EOF
+
+      - name: Generate Xcode project
         run: |
           brew install xcodegen
           cat << 'EOF' > project.yml
-          name: Wave
+          name: VibeChess
           options:
             bundleIdPrefix: com.vibe
           targets:
-            Wave:
+            VibeChess:
               type: application
               platform: iOS
               deploymentTarget: "16.0"
@@ -76,34 +287,39 @@ jobs:
               settings:
                 base:
                   SWIFT_VERSION: "5.0"
-                  SWIFT_OPTIMIZATION_LEVEL: "-O"
                   ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
                   GENERATE_INFOPLIST_FILE: YES
-                  INFOPLIST_KEY_CFBundleDisplayName: "WAVE"
                   INFOPLIST_KEY_UILaunchScreen_Generation: YES
-                  INFOPLIST_KEY_UIStatusBarHidden: YES
-                  INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+                  INFOPLIST_KEY_NSCameraUsageDescription: "Камера необходима для режима AR."
+                  DEBUG_INFORMATION_FORMAT: dwarf
                   CODE_SIGNING_REQUIRED: "NO"
                   CODE_SIGNING_ALLOWED: "NO"
           EOF
           xcodegen generate
-          sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' Wave.xcodeproj/project.pbxproj
 
-      - name: Build App (Release)
+      - name: Build app (Release)
         run: |
-          xcodebuild -project Wave.xcodeproj -scheme Wave -configuration Release -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO clean build CONFIGURATION_BUILD_DIR=${{ github.workspace }}/build
+          xcodebuild -project VibeChess.xcodeproj -scheme VibeChess -configuration Release -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            clean build CONFIGURATION_BUILD_DIR=${{ github.workspace }}/build
 
       - name: Create IPA
         run: |
           mkdir -p Payload
-          mv build/Wave.app Payload/
-          zip -r Wave.ipa Payload
+          mv build/VibeChess.app Payload/
+          zip -r VibeChess.ipa Payload
 
-      - name: Publish Release
+      - name: Publish Public Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="v1.0.${{ github.run_number }}"
-          gh release create "$VERSION" Wave.ipa \
-            --title "WAVE $VERSION" \
-            --notes "WAVE: интерактивное кино, техно-демо"
+          VERSION="v3.0.${{ github.run_number }}"
+          gh release create "$VERSION" VibeChess.ipa \
+            --title "VibeChess $VERSION (full chess rules + smart bot)" \
+            --notes "Версия 3.0:
+            - Полные правила: шах, мат, пат, рокировка, взятие на проходе, превращение пешки
+            - Бот играет только легальными ходами (3 уровня сложности)
+            - Подписи на доске: A-H и 1-8
+            - Новые фигуры, текстуры и подсветка ходов
+            - Исправлены вылеты и сброс настроек
+            - Сборка на macOS 26 / Xcode 26"
