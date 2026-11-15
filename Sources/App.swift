@@ -6,11 +6,11 @@ import AudioToolbox
 import UIKit
 
 // ============================================================
-// VIBE CHESS 3D  v3
+// VIBE CHESS 3D  v4
 //  - полные правила шахмат (шах, мат, пат, рокировка, взятие
 //    на проходе, превращение, ничья)
-//  - бот на alpha-beta поиске: ходит только легальными ходами
-//  - доска с буквами A-H и цифрами 1-8
+//  - доска плавно парит в открытом космосе без постамента
+//  - при взятии фигуры снизу клетки открывается чёрная дыра
 // ============================================================
 
 // MARK: - Базовые типы
@@ -638,11 +638,14 @@ final class SoundEngine: NSObject {
         super.init()
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
         try? AVAudioSession.sharedInstance().setActive(true)
-        for n in ["move", "capture", "select", "click", "check", "win"] { loadSound(n) }
+        for n in ["move", "capture", "blackhole", "select", "click", "check", "win"] { loadSound(n) }
+        players["blackhole"]?.volume = 0.9
+        players["select"]?.volume = 0.75
+        players["click"]?.volume = 0.75
         if let url = Bundle.main.url(forResource: "ambient", withExtension: "wav") {
             bgPlayer = try? AVAudioPlayer(contentsOf: url)
             bgPlayer?.numberOfLoops = -1
-            bgPlayer?.volume = 0.3
+            bgPlayer?.volume = 0.30
             bgPlayer?.prepareToPlay()
         }
     }
@@ -979,6 +982,13 @@ final class GameManager: ObservableObject {
         boardCtl.setHighlights(selected: nil, targets: [:], last: m, check: nil)
 
         SoundEngine.shared.play(capture ? "capture" : "move", enabled: sfxEnabled)
+        if capture {
+            let tok = gameToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self = self, self.gameToken == tok else { return }
+                SoundEngine.shared.play("blackhole", enabled: self.sfxEnabled)
+            }
+        }
         haptic(capture ? .heavy : .medium)
         if m.promo != 0 { SoundEngine.shared.speak("Пешка превращается!", enabled: voiceEnabled) }
 
@@ -1285,11 +1295,14 @@ final class GameManager: ObservableObject {
         arBoardAnchorNode = nil
         boardCtl.root.removeFromParentNode()
         boardCtl.root.position = SCNVector3Zero
-        space.scene.rootNode.addChildNode(boardCtl.root)
+        boardCtl.root.eulerAngles = SCNVector3Zero
+        space.boardMount.addChildNode(boardCtl.root)
     }
 
     func attachBoard(to node: SCNNode) {
         boardCtl.root.removeFromParentNode()
+        boardCtl.root.position = SCNVector3Zero
+        boardCtl.root.eulerAngles = SCNVector3Zero
         node.addChildNode(boardCtl.root)
     }
 }
@@ -1325,6 +1338,8 @@ struct TextureCache {
     static let beam = load("fx_beam")
     static let halo = load("fx_halo")
     static let haloWarm = load("fx_halo_warm")
+    static let blackholeDisk = load("fx_blackhole_disk")
+    static let blackholeRing = load("fx_blackhole_ring")
     static let hlCyan = load("hl_tile_cyan")
     static let hlYellow = load("hl_tile_yellow")
     static let hlRed = load("hl_tile_red")
@@ -1649,6 +1664,7 @@ final class BoardController {
     private let squaresNode = SCNNode()
     private let piecesNode = SCNNode()
     private let labelsNode = SCNNode()
+    private let fxNode = SCNNode()
     private var overlays: [SCNNode] = []
     private var overlayMats: [SCNMaterial] = []
     private var pieceNodes: [Int: SCNNode] = [:]
@@ -1661,6 +1677,7 @@ final class BoardController {
         root.addChildNode(squaresNode)
         root.addChildNode(piecesNode)
         root.addChildNode(labelsNode)
+        root.addChildNode(fxNode)
         buildSquares()
         buildFrame()
         buildLabels()
@@ -1850,6 +1867,7 @@ final class BoardController {
 
     func reset(board: ChessBoard, flipped: Bool) {
         animationToken += 1
+        for child in fxNode.childNodes { child.removeFromParentNode() }
         setFlipped(flipped)
         rebuild(from: board)
     }
@@ -1912,7 +1930,156 @@ final class BoardController {
         liftedSquare = s
     }
 
-    // MARK: Эффекты частиц
+    // MARK: Чёрная дыра и эффекты частиц
+
+    func spawnBlackHole(at square: Int) {
+        let p = pos(square)
+        let bh = SCNNode()
+        // Центр горизонта событий чуть ниже поверхности клетки — вырывается снизу
+        bh.position = SCNVector3(p.x, restY + 0.015, p.z)
+        bh.scale = SCNVector3(0.01, 0.01, 0.01)
+        fxNode.addChildNode(bh)
+
+        // 1. Чёрный горизонт событий (сплющенный эллипсоид)
+        let voidSphere = SCNSphere(radius: 0.42)
+        voidSphere.segmentCount = 32
+        let voidMat = SCNMaterial()
+        voidMat.lightingModel = .constant
+        voidMat.diffuse.contents = UIColor.black
+        voidMat.writesToDepthBuffer = true
+        voidSphere.materials = [voidMat]
+        let voidNode = SCNNode(geometry: voidSphere)
+        voidNode.scale = SCNVector3(1.0, 0.48, 1.0)
+        voidNode.position = SCNVector3(0, -0.02, 0)
+        voidNode.renderingOrder = 15
+        voidNode.castsShadow = false
+        bh.addChildNode(voidNode)
+
+        // 2. Нижняя гравитационная воронка, уходящая под доску
+        let funnel = SCNCone(topRadius: 0.52, bottomRadius: 0.02, height: 0.95)
+        funnel.radialSegmentCount = 32
+        let funnelMat = SCNMaterial()
+        funnelMat.lightingModel = .constant
+        funnelMat.diffuse.contents = UIColor(red: 0.38, green: 0.14, blue: 0.72, alpha: 0.85)
+        funnelMat.blendMode = .add
+        funnelMat.writesToDepthBuffer = false
+        funnelMat.isDoubleSided = true
+        funnel.materials = [funnelMat]
+        let funnelNode = SCNNode(geometry: funnel)
+        funnelNode.position = SCNVector3(0, -0.49, 0)
+        funnelNode.renderingOrder = 14
+        funnelNode.castsShadow = false
+        funnelNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 7.0, z: 0, duration: 1.0)))
+        bh.addChildNode(funnelNode)
+
+        // 3. Основной аккреционный диск над клеткой (вращается в плоскости доски)
+        let diskPlane = SCNPlane(width: 1.85, height: 1.85)
+        let diskMat = SCNMaterial()
+        diskMat.lightingModel = .constant
+        if let img = TextureCache.blackholeDisk {
+            diskMat.diffuse.contents = img
+        } else {
+            diskMat.diffuse.contents = UIColor.orange
+        }
+        diskMat.blendMode = .add
+        diskMat.writesToDepthBuffer = false
+        diskMat.isDoubleSided = true
+        diskPlane.materials = [diskMat]
+        let diskNode = SCNNode(geometry: diskPlane)
+        diskNode.eulerAngles.x = -Float.pi / 2
+        diskNode.position = SCNVector3(0, 0.015, 0)
+        diskNode.renderingOrder = 18
+        diskNode.castsShadow = false
+        diskNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0, z: 8.5, duration: 1.0)))
+        bh.addChildNode(diskNode)
+
+        // 4. Второе искривлённое фотонное кольцо (под углом + нижний выход под доской)
+        let ringPlane = SCNPlane(width: 1.45, height: 1.45)
+        let ringMat = SCNMaterial()
+        ringMat.lightingModel = .constant
+        if let rimg = TextureCache.blackholeRing {
+            ringMat.diffuse.contents = rimg
+        } else {
+            ringMat.diffuse.contents = UIColor(red: 0.85, green: 0.55, blue: 1.0, alpha: 1)
+        }
+        ringMat.blendMode = .add
+        ringMat.writesToDepthBuffer = false
+        ringMat.isDoubleSided = true
+        ringPlane.materials = [ringMat]
+
+        let ringTilt = SCNNode(geometry: ringPlane)
+        ringTilt.eulerAngles = SCNVector3(-Float.pi / 2 + 0.34, 0, 0)
+        ringTilt.position = SCNVector3(0, 0.04, 0)
+        ringTilt.renderingOrder = 19
+        ringTilt.castsShadow = false
+        ringTilt.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0, z: -6.0, duration: 1.0)))
+        bh.addChildNode(ringTilt)
+
+        let underDisk = SCNNode(geometry: diskPlane)
+        underDisk.eulerAngles.x = -Float.pi / 2
+        underDisk.position = SCNVector3(0, -0.58, 0)
+        underDisk.scale = SCNVector3(0.75, 0.75, 0.75)
+        underDisk.renderingOrder = 16
+        underDisk.castsShadow = false
+        underDisk.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0, z: -7.5, duration: 1.0)))
+        bh.addChildNode(underDisk)
+
+        // 5. Тёплый ореол свечения вокруг воронки
+        if let glowImg = TextureCache.glowWarm {
+            let gPlane = SCNPlane(width: 1.9, height: 1.9)
+            let gMat = SCNMaterial()
+            gMat.lightingModel = .constant
+            gMat.diffuse.contents = glowImg
+            gMat.blendMode = .add
+            gMat.writesToDepthBuffer = false
+            gMat.isDoubleSided = true
+            gPlane.materials = [gMat]
+            let gNode = SCNNode(geometry: gPlane)
+            gNode.eulerAngles.x = -Float.pi / 2
+            gNode.position = SCNVector3(0, 0.008, 0)
+            gNode.opacity = 0.75
+            gNode.renderingOrder = 17
+            gNode.castsShadow = false
+            bh.addChildNode(gNode)
+        }
+
+        // 6. Поток искр, втягивающихся внутрь чёрной дыры
+        let ps = SCNParticleSystem()
+        ps.loops = false
+        ps.emissionDuration = 0.55
+        ps.birthRate = 220
+        ps.particleLifeSpan = 0.42
+        ps.particleLifeSpanVariation = 0.14
+        ps.emitterShape = SCNTorus(ringRadius: 0.72, pipeRadius: 0.08)
+        ps.birthLocation = .surface
+        ps.birthDirection = .surfaceNormal
+        ps.particleVelocity = -1.65
+        ps.particleVelocityVariation = 0.55
+        ps.acceleration = SCNVector3(0, -1.8, 0)
+        ps.particleSize = 0.055
+        ps.particleSizeVariation = 0.03
+        ps.particleColor = UIColor(red: 1.0, green: 0.65, blue: 0.28, alpha: 1)
+        ps.particleColorVariation = SCNVector4(0.16, 0.25, 0.3, 0)
+        ps.blendMode = .additive
+        ps.isLightingEnabled = false
+        if let img = TextureCache.spark { ps.particleImage = img }
+        let psHolder = SCNNode()
+        psHolder.position = SCNVector3(0, 0.18, 0)
+        psHolder.addParticleSystem(ps)
+        psHolder.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 10.0, z: 0, duration: 1.0)))
+        bh.addChildNode(psHolder)
+
+        // Жизненный цикл: раскрытие снизу -> удержание пока фигура проваливается -> схлопывание
+        let open = SCNAction.scale(to: 1.0, duration: 0.18)
+        open.timingMode = .easeOut
+        let hold = SCNAction.wait(duration: 0.46)
+        let collapse = SCNAction.group([
+            SCNAction.scale(to: 0.01, duration: 0.22),
+            SCNAction.fadeOut(duration: 0.22)
+        ])
+        collapse.timingMode = .easeIn
+        bh.runAction(SCNAction.sequence([open, hold, collapse, SCNAction.removeFromParentNode()]))
+    }
 
     func burst(at square: Int, color: UIColor, intensity: CGFloat = 1.0, height: Float = 0.45) {
         let ps = SCNParticleSystem()
@@ -1937,7 +2104,7 @@ final class BoardController {
         let p = pos(square)
         n.position = SCNVector3(p.x, p.y + height, p.z)
         n.addParticleSystem(ps)
-        root.addChildNode(n)
+        fxNode.addChildNode(n)
         n.runAction(SCNAction.sequence([SCNAction.wait(duration: 2.2), SCNAction.removeFromParentNode()]))
     }
 
@@ -1977,31 +2144,39 @@ final class BoardController {
         pieceNodes[m.from] = nil
         mover.removeAllActions()
 
-        // Взятая фигура (в том числе на проходе)
+        // Взятая фигура (в том числе на проходе): чёрная дыра открывается снизу клетки и затягивает её
         var capSq = -1
         if before.sq[m.to] != 0 {
             capSq = m.to
         } else if abs(Int(before.sq[m.from])) == 1 && (m.from & 7) != (m.to & 7) {
             capSq = (m.from >> 3) * 8 + (m.to & 7)
         }
+        let hasCapture = capSq >= 0 && pieceNodes[capSq] != nil
         if capSq >= 0, let cap = pieceNodes[capSq] {
             pieceNodes[capSq] = nil
             cap.name = "fly"
-            let dx = CGFloat.random(in: -2...2)
-            let dz = CGFloat.random(in: -2...2)
-            let fly = SCNAction.group([
-                SCNAction.moveBy(x: dx, y: 2.5, z: dz, duration: 0.6),
-                SCNAction.fadeOut(duration: 0.6),
-                SCNAction.rotateBy(x: 3, y: 0, z: 2, duration: 0.6)
+            cap.removeAllActions()
+            spawnBlackHole(at: capSq)
+
+            // Дрожь при разрыве пространства, затем закрутка, спагеттификация и падение вниз в воронку
+            let tremor = SCNAction.sequence([
+                SCNAction.moveBy(x: 0.03, y: 0.04, z: -0.02, duration: 0.05),
+                SCNAction.moveBy(x: -0.05, y: 0.02, z: 0.04, duration: 0.05),
+                SCNAction.moveBy(x: 0.02, y: -0.02, z: -0.02, duration: 0.05)
             ])
-            cap.runAction(SCNAction.sequence([SCNAction.wait(duration: 0.25), fly, SCNAction.removeFromParentNode()]))
-            let capSquare = capSq
-            let capIsWhite = before.sq[capSq] > 0
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
-                guard let self = self, self.animationToken == token else { return }
-                let col = capIsWhite ? UIColor(red: 1.0, green: 0.92, blue: 0.7, alpha: 1) : UIColor(red: 1.0, green: 0.45, blue: 0.2, alpha: 1)
-                self.burst(at: capSquare, color: col)
-            }
+            let suck = SCNAction.group([
+                SCNAction.moveBy(x: 0, y: -0.82, z: 0, duration: 0.40),
+                SCNAction.rotateBy(x: 0.25, y: 9.0, z: 0.2, duration: 0.40),
+                SCNAction.customAction(duration: 0.40) { node, elapsed in
+                    let t = Float(elapsed / 0.40)
+                    let xz = max(0.01, 1.0 - t * 0.96)
+                    let yStretch = 1.0 + t * 0.95 - (t * t) * 0.75
+                    node.scale = SCNVector3(xz, max(0.01, yStretch), xz)
+                },
+                SCNAction.fadeOut(duration: 0.40)
+            ])
+            suck.timingMode = .easeIn
+            cap.runAction(SCNAction.sequence([tremor, suck, SCNAction.removeFromParentNode()]))
         }
 
         // Рокировка: двигаем ладью
@@ -2023,9 +2198,9 @@ final class BoardController {
         }
 
         let target = pos(m.to)
-        let lift = SCNAction.move(to: SCNVector3(mover.position.x, restY + 0.7, mover.position.z), duration: 0.12)
-        let glide = SCNAction.move(to: SCNVector3(target.x, restY + 0.7, target.z), duration: 0.28)
-        let drop = SCNAction.move(to: target, duration: 0.12)
+        let lift = SCNAction.move(to: SCNVector3(mover.position.x, restY + 0.72, mover.position.z), duration: 0.14)
+        let glide = SCNAction.move(to: SCNVector3(target.x, restY + 0.72, target.z), duration: hasCapture ? 0.34 : 0.28)
+        let drop = SCNAction.move(to: target, duration: 0.14)
         lift.timingMode = .easeOut
         glide.timingMode = .easeInEaseOut
         drop.timingMode = .easeIn
@@ -2034,7 +2209,7 @@ final class BoardController {
         }
         mover.runAction(SCNAction.sequence([lift, glide, drop, done]))
         // Страховка: если анимация почему-то не дошла до конца
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { finish() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { finish() }
     }
 }
 
@@ -2042,13 +2217,14 @@ final class BoardController {
 
 final class SpaceScene {
     let scene = SCNScene()
+    let boardMount = SCNNode()          // плавает в невесомости с доской относительно спокойной камеры и космоса
     let orbit = SCNNode()
     private let pitch = SCNNode()
     private let camNode = SCNNode()
-    private let rig = SCNNode()          // небо, солнце, планеты и свет: разворачивается вместе с видом игрока
+    private let rig = SCNNode()          // солнце, планеты и свет: разворачиваются вместе с видом игрока
     private let beamsNode = SCNNode()
     private let dustNode = SCNNode()
-    private let floorNode = SCNNode()
+    private let skySphereNode = SCNNode()
     private var backLight: SCNLight? = nil
     private let baseCam = SCNVector3(0, 9.6, 9.0)
     private var zoom: Float = 1.0
@@ -2056,14 +2232,15 @@ final class SpaceScene {
     init() {
         buildBackground()
         scene.rootNode.addChildNode(rig)
+        scene.rootNode.addChildNode(boardMount)
         buildSun()
         buildPlanets()
         buildStars()
         buildBeams(from: SCNVector3(3.3, -9, -37))
         buildDust()
-        buildPedestal()
         buildCameraAndLights()
         applyQuality(.ultra)
+        startBoardFloat()
         startMenuOrbit()
     }
 
@@ -2087,10 +2264,21 @@ final class SpaceScene {
     }
 
     private func buildBackground() {
+        scene.background.contents = UIColor(red: 0.004, green: 0.006, blue: 0.02, alpha: 1)
         if let sky = TextureCache.sky {
-            scene.background.contents = sky
-        } else {
-            scene.background.contents = UIColor(red: 0.004, green: 0.006, blue: 0.02, alpha: 1)
+            let sk = SCNSphere(radius: 170)
+            sk.segmentCount = 48
+            let sm = SCNMaterial()
+            sm.lightingModel = .constant
+            sm.diffuse.contents = sky
+            sm.cullMode = .front
+            sm.writesToDepthBuffer = false
+            sk.materials = [sm]
+            skySphereNode.geometry = sk
+            skySphereNode.castsShadow = false
+            skySphereNode.renderingOrder = -100
+            skySphereNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.04, z: 0, duration: 30)))
+            scene.rootNode.addChildNode(skySphereNode)
         }
         if let env = TextureCache.env {
             scene.lightingEnvironment.contents = env
@@ -2280,7 +2468,7 @@ final class SpaceScene {
             geos.append(g)
         }
         let stars = SCNNode()
-        for i in 0..<420 {
+        for i in 0..<900 {
             var x: Float = 0
             var y: Float = 0
             var z: Float = 0
@@ -2294,25 +2482,26 @@ final class SpaceScene {
                 tries += 1
             } while (len > 1 || len < 0.2) && tries < 20
             if len > 1 || len < 0.2 { continue }
-            let d = Float.random(in: 80...110) / len
+            let d = Float.random(in: 75...135) / len
             let n = SCNNode(geometry: geos[i % geos.count])
             n.position = SCNVector3(x * d, y * d, z * d)
-            let k = Float.random(in: 0.4...1.4)
+            let k = Float.random(in: 0.35...1.6)
             n.scale = SCNVector3(k, k, k)
             n.castsShadow = false
             stars.addChildNode(n)
         }
-        scene.rootNode.addChildNode(stars)
         // Яркие звёзды со свечением
-        for _ in 0..<16 {
+        for _ in 0..<26 {
             let a = Float.random(in: 0...(2 * Float.pi))
-            let e = Float.random(in: -0.5...1.0)
-            let d: Float = 95
+            let e = Float.random(in: -0.9...1.0)
+            let d: Float = Float.random(in: 88...120)
             let g = sprite(TextureCache.burst, 3.2, 3.2)
             g.position = SCNVector3(d * cos(e) * sin(a), d * sin(e), -d * cos(e) * cos(a))
-            g.opacity = CGFloat(Float.random(in: 0.5...0.95))
-            scene.rootNode.addChildNode(g)
+            g.opacity = CGFloat(Float.random(in: 0.45...0.95))
+            stars.addChildNode(g)
         }
+        stars.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.03, z: 0, duration: 25)))
+        scene.rootNode.addChildNode(stars)
     }
 
     // MARK: Лучи света (объёмный свет)
@@ -2384,67 +2573,24 @@ final class SpaceScene {
         scene.rootNode.addChildNode(dustNode)
     }
 
-    // MARK: Постамент с отражением
+    // MARK: Плавный полёт доски в невесомости
 
-    private func buildPedestal() {
-        let box = SCNBox(width: 18, height: 0.5, length: 18, chamferRadius: 0.12)
-        let bm = SCNMaterial()
-        bm.lightingModel = .physicallyBased
-        bm.diffuse.contents = UIColor(red: 0.025, green: 0.027, blue: 0.035, alpha: 1)
-        bm.roughness.contents = 0.14
-        bm.metalness.contents = 0.0
-        box.materials = [bm]
-        let pn = SCNNode(geometry: box)
-        pn.position = SCNVector3(0, -0.725, 0)
-        scene.rootNode.addChildNode(pn)
-
-        let fl = SCNFloor()
-        fl.width = 17.7
-        fl.length = 17.7
-        fl.reflectivity = 0.30
-        fl.reflectionFalloffStart = 0
-        fl.reflectionFalloffEnd = 4.5
-        fl.reflectionResolutionScaleFactor = 0.6
-        let fm = SCNMaterial()
-        fm.lightingModel = .physicallyBased
-        fm.diffuse.contents = UIColor(red: 0.02, green: 0.022, blue: 0.03, alpha: 1)
-        fm.roughness.contents = 0.16
-        fm.metalness.contents = 0.0
-        fl.materials = [fm]
-        floorNode.geometry = fl
-        floorNode.position = SCNVector3(0, -0.474, 0)
-        scene.rootNode.addChildNode(floorNode)
-
-        // Золотой кант и угловые светильники
-        let edge: [(CGFloat, CGFloat, Float, Float)] = [
-            (18.0, 0.07, 0, 8.965), (18.0, 0.07, 0, -8.965), (0.07, 18.0, 8.965, 0), (0.07, 18.0, -8.965, 0)
-        ]
-        for (w, l, x, z) in edge {
-            let b = SCNBox(width: w, height: 0.05, length: l, chamferRadius: 0.012)
-            b.materials = [PieceBuilder.gold]
-            let n = SCNNode(geometry: b)
-            n.position = SCNVector3(x, -0.47, z)
-            n.castsShadow = false
-            scene.rootNode.addChildNode(n)
+    private func startBoardFloat() {
+        boardMount.removeAction(forKey: "float")
+        let period: TimeInterval = 120.0
+        let w0 = Float(2.0 * Double.pi / period)
+        let drift = SCNAction.customAction(duration: period) { node, elapsed in
+            let t = Float(elapsed)
+            let y = 0.16 * sin(14 * w0 * t) + 0.04 * sin(27 * w0 * t + 0.8)
+            let x = 0.09 * sin(7 * w0 * t + 0.4)
+            let z = 0.08 * cos(9 * w0 * t + 1.1)
+            let rx = 0.018 * sin(11 * w0 * t + 0.3)
+            let rz = 0.020 * cos(8 * w0 * t + 1.4)
+            let ry = 0.014 * sin(5 * w0 * t + 0.7)
+            node.position = SCNVector3(x, y, z)
+            node.eulerAngles = SCNVector3(rx, ry, rz)
         }
-        let lampMat = SCNMaterial()
-        lampMat.lightingModel = .constant
-        lampMat.diffuse.contents = UIColor(red: 1.0, green: 0.85, blue: 0.55, alpha: 1)
-        lampMat.emission.contents = UIColor(red: 1.0, green: 0.8, blue: 0.45, alpha: 1)
-        lampMat.emission.intensity = 3.0
-        for (x, z) in [(Float(8.5), Float(8.5)), (Float(-8.5), Float(8.5)), (Float(8.5), Float(-8.5)), (Float(-8.5), Float(-8.5))] {
-            let s = SCNSphere(radius: 0.2)
-            s.segmentCount = 20
-            s.materials = [lampMat]
-            let n = SCNNode(geometry: s)
-            n.position = SCNVector3(x, -0.2, z)
-            n.castsShadow = false
-            scene.rootNode.addChildNode(n)
-            let g = sprite(TextureCache.glowWarm, 2.2, 2.2)
-            g.position = SCNVector3(x, -0.2, z)
-            g.opacity = 0.8
-            scene.rootNode.addChildNode(g)
-        }
+        boardMount.runAction(SCNAction.repeatForever(drift), forKey: "float")
     }
 
     // MARK: Камера и свет
@@ -2501,6 +2647,17 @@ final class SpaceScene {
         rig.addChildNode(fn)
         fn.look(at: SCNVector3Zero)
 
+        // Лёгкий космический отсвет снизу, подсвечивающий парящую доску
+        let under = SCNLight()
+        under.type = .directional
+        under.intensity = 240
+        under.color = UIColor(red: 0.42, green: 0.58, blue: 0.95, alpha: 1)
+        let un = SCNNode()
+        un.light = under
+        un.position = SCNVector3(2, -10, 4)
+        rig.addChildNode(un)
+        un.look(at: SCNVector3Zero)
+
         let amb = SCNLight()
         amb.type = .ambient
         amb.intensity = 160
@@ -2528,7 +2685,6 @@ final class SpaceScene {
             backLight?.shadowSampleCount = 4
             beamsNode.isHidden = true
             dustNode.isHidden = true
-            floorNode.isHidden = true
         case .high:
             configureFilmLook(cam)
             cam.screenSpaceAmbientOcclusionIntensity = 0
@@ -2538,7 +2694,6 @@ final class SpaceScene {
             backLight?.shadowSampleCount = 8
             beamsNode.isHidden = false
             dustNode.isHidden = false
-            floorNode.isHidden = true
         case .ultra:
             configureFilmLook(cam)
             cam.screenSpaceAmbientOcclusionIntensity = 0.8
@@ -2553,7 +2708,6 @@ final class SpaceScene {
             backLight?.shadowSampleCount = 16
             beamsNode.isHidden = false
             dustNode.isHidden = false
-            floorNode.isHidden = false
         }
     }
 
@@ -3248,7 +3402,7 @@ struct SettingsModalView: View {
                         ForEach(GraphicsQuality.allCases) { q in Text(q.rawValue).tag(q) }
                     }
                     .pickerStyle(.segmented)
-                    Text("Ультра: отражения, лучи света, тени 4K, мягкое затенение. Если игра тормозит, выбери «Высокое» или «Стандарт».")
+                    Text("Ультра: лучи света, тени 4K, мягкое затенение. Если игра тормозит, выбери «Высокое» или «Стандарт».")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
