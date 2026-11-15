@@ -51,7 +51,6 @@ jobs:
           os.makedirs(OUT, exist_ok=True)
           os.makedirs(os.path.dirname(ICON), exist_ok=True)
 
-          # ------------------------------------------------------------------ PNG
           def save_png(path, arr):
               arr = np.ascontiguousarray(arr)
               h, w = arr.shape[:2]
@@ -75,7 +74,6 @@ jobs:
           def u8(a):
               return np.clip(a * 255.0, 0, 255).astype(np.uint8)
 
-          # ------------------------------------------------------------------ noise
           def hash2(ix, iy, seed):
               n = ix.astype(np.uint32) * np.uint32(374761393)
               n = n + iy.astype(np.uint32) * np.uint32(668265263)
@@ -127,7 +125,6 @@ jobs:
               n /= np.linalg.norm(n, axis=-1, keepdims=True)
               return u8(n * 0.5 + 0.5)
 
-          # ------------------------------------------------------------------ доска
           def make_wood():
               w = h = 1024
               U, V = grid(w, h)
@@ -183,7 +180,6 @@ jobs:
               col2 = np.stack([b2 + vein2 * 120, b2 + vein2 * 105, b2 + vein2 * 70], axis=-1)
               save_png(out("piece_black.png"), np.clip(col2, 0, 255).astype(np.uint8))
 
-          # ------------------------------------------------------------------ планеты
           def add_craters(hm, count, seed, rmin, rmax, depth):
               H, W = hm.shape
               r = np.random.default_rng(seed)
@@ -280,7 +276,6 @@ jobs:
               col = mix((220, 70, 8), (255, 236, 150), s ** 0.8)
               save_png(out("sun_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
 
-          # ------------------------------------------------------------------ небо
           def make_sky():
               w, h = 2048, 1024
               U, V = grid(w, h)
@@ -331,12 +326,18 @@ jobs:
               col = col + box(0.86, 0.93, 0.18, 0.40, (0.7, 0.8, 1.1))
               save_png(out("env_studio.png"), u8(np.clip(col, 0, 1)))
 
-          # ------------------------------------------------------------------ FX
           def rgba_additive(rgb, alpha):
               a = np.clip(alpha, 0, 1)
               out_a = np.zeros(alpha.shape + (4,), dtype=np.uint8)
               for i in range(3):
                   out_a[..., i] = u8(rgb[i] / 255.0 * a)
+              out_a[..., 3] = u8(a)
+              return out_a
+
+          def rgba_map(rgb, alpha):
+              a = np.clip(alpha, 0, 1)
+              out_a = np.zeros(alpha.shape + (4,), dtype=np.uint8)
+              out_a[..., :3] = u8((np.clip(rgb, 0, 255) / 255.0) * a[..., None])
               out_a[..., 3] = u8(a)
               return out_a
 
@@ -349,18 +350,15 @@ jobs:
               save_png(out("fx_glow_warm.png"), rgba_additive((255, 170, 90), np.exp(-R * R * 3.6) * (R < 1)))
               save_png(out("fx_dust.png"), rgba_additive((255, 235, 200), np.exp(-R * R * 9) * (R < 1)))
               save_png(out("fx_spark.png"), rgba_additive((255, 220, 140), np.exp(-R * R * 16) * (R < 1)))
-              # анаморфный блик
               w2, h2 = 512, 64
               U2, V2 = grid(w2, h2)
               X2 = (U2 - 0.5) * 2; Y2 = (V2 - 0.5) * 2
               streak = np.exp(-(X2 / 0.55) ** 2) * np.exp(-(Y2 / 0.07) ** 2)
               save_png(out("fx_streak.png"), rgba_additive((255, 215, 170), streak))
-              # лучистая звезда
               s2 = 512
               U3, V3 = grid(s2, s2)
               X3 = (U3 - 0.5) * 2; Y3 = (V3 - 0.5) * 2
               R3 = np.sqrt(X3 * X3 + Y3 * Y3)
-              A = np.arctan2(Y3, X3)
               star = np.zeros_like(R3)
               for k in range(3):
                   ang = k * math.pi / 3 + 0.2
@@ -368,19 +366,16 @@ jobs:
                   star += np.exp(-(perp / 0.012) ** 2) * np.exp(-R3 * 2.2)
               star += np.exp(-R3 * R3 * 30)
               save_png(out("fx_burst.png"), rgba_additive((255, 236, 200), star * (R3 < 1)))
-              # луч для объёмного света: ширина по u, яркость вдоль v
               bw, bh = 128, 512
               U4, V4 = grid(bw, bh)
               prof = np.exp(-((U4 - 0.5) / 0.20) ** 2) * (1 - V4) ** 1.4 * smooth(0.0, 0.03, 1 - V4)
               save_png(out("fx_beam.png"), rgba_additive((255, 226, 178), prof))
-              # ореол атмосферы планет
               s3 = 512
               U5, V5 = grid(s3, s3)
               R5 = np.sqrt((U5 - 0.5) ** 2 + (V5 - 0.5) ** 2) / 0.5
               halo = np.exp(-((R5 - 0.80) / 0.075) ** 2) * (R5 < 1)
               save_png(out("fx_halo.png"), rgba_additive((120, 180, 255), halo))
               save_png(out("fx_halo_warm.png"), rgba_additive((255, 190, 120), halo))
-              # подсветка клеток
               def sq_dist(Xa, Ya):
                   return (np.abs(Xa) ** 5 + np.abs(Ya) ** 5) ** 0.2
               D = sq_dist(X, Y)
@@ -405,7 +400,32 @@ jobs:
               rr[..., 3] = u8(np.clip(ring, 0, 1) * (R < 1))
               save_png(out("hl_ring_red.png"), rr)
 
-          # ------------------------------------------------------------------ иконка
+          def make_blackhole_fx():
+              s = 512
+              U, V = grid(s, s)
+              X = (U - 0.5) * 2
+              Y = (V - 0.5) * 2
+              R = np.sqrt(X * X + Y * Y)
+              A = np.arctan2(Y, X)
+              turb = fbm(U, V, 6, 6, 4, 307)
+              spiral1 = 0.5 + 0.5 * np.sin(3 * A + 14.0 * np.log(np.maximum(R, 0.12)) + 2.8 * turb)
+              spiral2 = 0.5 + 0.5 * np.sin(5 * A + 22.0 * np.log(np.maximum(R, 0.12)) - 1.8 * turb)
+              swirl = 0.65 * spiral1 + 0.35 * spiral2
+              inner_cut = smooth(0.30, 0.35, R)
+              outer_fade = (1 - smooth(0.55, 0.98, R)) ** 1.3
+              ring_hot = np.exp(-((R - 0.38) / 0.055) ** 2)
+              alpha = np.clip((0.25 + 0.75 * swirl) * inner_cut * outer_fade + 0.75 * ring_hot * inner_cut, 0, 1)
+              t_col = np.clip((R - 0.34) / 0.52, 0, 1)
+              col = mix((255, 232, 175), (255, 118, 28), smooth(0.0, 0.45, t_col))
+              col = mix(col, (148, 42, 215), smooth(0.42, 1.0, t_col))
+              save_png(out("fx_blackhole_disk.png"), rgba_map(col, alpha))
+
+              photon = np.exp(-((R - 0.375) / 0.025) ** 2) * 0.95
+              lens = np.exp(-((R - 0.48) / 0.08) ** 2) * (0.28 + 0.20 * np.cos(2 * A + 0.6))
+              ring_alpha = np.clip((photon + lens) * smooth(0.32, 0.35, R) * (1 - smooth(0.85, 1.0, R)), 0, 1)
+              ring_col = mix((185, 110, 255), (255, 238, 195), np.clip(photon * 1.3, 0, 1))
+              save_png(out("fx_blackhole_ring.png"), rgba_map(ring_col, ring_alpha))
+
           def make_icon():
               s = 1024
               U, V = grid(s, s)
@@ -440,79 +460,268 @@ jobs:
               col = np.where(king[..., None], gold, col)
               save_png(ICON, np.clip(col, 0, 255).astype(np.uint8))
 
-
           import time
           t0 = time.time()
           for fn in (make_wood, make_marble, make_piece_textures, make_earth,
                      lambda: make_rock("mars", (95, 40, 24), (210, 118, 72), 90, 61),
                      lambda: make_rock("moon", (70, 70, 72), (200, 198, 192), 160, 131),
-                     make_saturn, make_sun, make_sky, make_env, make_fx, make_icon):
+                     make_saturn, make_sun, make_sky, make_env, make_fx, make_blackhole_fx, make_icon):
               fn()
               print("visual ok", round(time.time() - t0, 1), "s")
 
-          # ---------- звуки ----------
-          def create_wav(filename, duration, gen, rate=44100):
-              n = int(rate * duration)
-              frames = bytearray()
-              for i in range(n):
-                  l, r = gen(i / rate)
-                  l = max(-1.0, min(1.0, l)); r = max(-1.0, min(1.0, r))
-                  frames += struct.pack('<hh', int(l * 32000), int(r * 32000))
+          SR = 44100
+          TAU = 2.0 * np.pi
+
+          def save_wav(filename, L, R, rate=SR):
+              peak = max(1e-6, float(np.max(np.abs(L))), float(np.max(np.abs(R))))
+              if peak > 0.94:
+                  scale = 0.94 / peak
+                  L = L * scale
+                  R = R * scale
+              L = np.clip(L, -1.0, 1.0)
+              R = np.clip(R, -1.0, 1.0)
+              stereo = np.stack([L, R], axis=-1)
+              pcm = (stereo * 32000.0).astype('<i2').tobytes()
               with wave.open(OUT + "/" + filename, 'w') as w:
-                  w.setnchannels(2); w.setsampwidth(2); w.setframerate(rate)
-                  w.writeframes(bytes(frames))
+                  w.setnchannels(2)
+                  w.setsampwidth(2)
+                  w.setframerate(rate)
+                  w.writeframes(pcm)
 
-          TAU = 2 * math.pi
-          def noise(): return random.random() * 2 - 1
+          def edge_fade(n, fade_in_s=0.003, fade_out_s=0.02):
+              env = np.ones(n, dtype=np.float64)
+              fi = min(n // 2, max(1, int(fade_in_s * SR)))
+              fo = min(n // 2, max(1, int(fade_out_s * SR)))
+              env[:fi] = np.sin(np.linspace(0, np.pi / 2, fi)) ** 2
+              env[-fo:] = np.cos(np.linspace(0, np.pi / 2, fo)) ** 2
+              return env
 
-          def move_s(t):
-              e = math.exp(-t * 30)
-              s = (math.sin(TAU * 190 * t) * 0.55 + math.sin(TAU * 96 * t) * 0.5 + noise() * 0.25 * math.exp(-t * 110)) * e
-              return s, s
+          def band_noise(n, f_low, f_high, seed):
+              rng = np.random.default_rng(seed)
+              x = rng.standard_normal(n)
+              X = np.fft.rfft(x)
+              freqs = np.fft.rfftfreq(n, 1.0 / SR)
+              mask = np.ones_like(freqs)
+              if f_low > 0:
+                  mask *= np.clip((freqs - f_low * 0.5) / max(1.0, f_low * 0.5), 0.0, 1.0)
+              if f_high < SR * 0.5:
+                  mask *= 1.0 / (1.0 + (freqs / max(1.0, f_high)) ** 4)
+              y = np.fft.irfft(X * mask, n=n)
+              return y / max(1e-6, float(np.max(np.abs(y))))
 
-          def capture_s(t):
-              e = math.exp(-t * 13)
-              s = (math.sin(TAU * 80 * t) * 0.6 + noise() * 0.4 * math.exp(-t * 35) + math.sin(TAU * 150 * t) * 0.3) * e
-              return s, s
+          def make_move_sound():
+              dur = 0.28
+              n = int(SR * dur)
+              t = np.arange(n, dtype=np.float64) / SR
+              f_thud = 56.0 + 42.0 * np.exp(-t * 48.0)
+              ph_thud = np.cumsum(f_thud) * (TAU / SR)
+              thud = np.sin(ph_thud) * np.exp(-t * 26.0) * 0.55
+              wood = (
+                  np.sin(TAU * 138.0 * t) * 0.45 * np.exp(-t * 34.0)
+                  + np.sin(TAU * 252.0 * t) * 0.30 * np.exp(-t * 46.0)
+                  + np.sin(TAU * 415.0 * t) * 0.16 * np.exp(-t * 68.0)
+              )
+              tap = band_noise(n, 700, 2600, 101) * np.exp(-t * 190.0) * 0.42
+              l = (thud + wood + tap) * edge_fade(n, 0.002, 0.03)
+              r = (thud + wood * 0.96 + np.roll(tap, 6) * 0.9) * edge_fade(n, 0.002, 0.03)
+              save_wav("move.wav", l, r)
 
-          def select_s(t):
-              s = math.sin(TAU * 1200 * t) * math.exp(-t * 60) * 0.35
-              return s, s
+          def make_select_sound():
+              dur = 0.13
+              n = int(SR * dur)
+              t = np.arange(n, dtype=np.float64) / SR
+              chime = (
+                  np.sin(TAU * 659.25 * t) * 0.42 * np.exp(-t * 34.0)
+                  + np.sin(TAU * 987.77 * t) * 0.32 * np.exp(-t * 40.0)
+                  + np.sin(TAU * 1318.5 * t) * 0.18 * np.exp(-t * 48.0)
+              )
+              tick = band_noise(n, 900, 3200, 102) * np.exp(-t * 210.0) * 0.22
+              sig = (chime + tick) * edge_fade(n, 0.003, 0.025) * 0.65
+              save_wav("select.wav", sig, np.roll(sig, 4))
 
-          def click_s(t):
-              s = math.sin(TAU * 880 * t) * math.exp(-t * 75) * 0.35
-              return s, s
+          def make_click_sound():
+              dur = 0.10
+              n = int(SR * dur)
+              t = np.arange(n, dtype=np.float64) / SR
+              body = (
+                  np.sin(TAU * 320.0 * t) * 0.45 * np.exp(-t * 65.0)
+                  + np.sin(TAU * 690.0 * t) * 0.30 * np.exp(-t * 95.0)
+              )
+              tap = band_noise(n, 800, 2800, 103) * np.exp(-t * 240.0) * 0.28
+              sig = (body + tap) * edge_fade(n, 0.002, 0.02) * 0.6
+              save_wav("click.wav", sig, sig)
 
-          def check_s(t):
-              f = 660 if t < 0.16 else 880
-              tt = t if t < 0.16 else t - 0.16
-              s = math.sin(TAU * f * tt) * math.exp(-tt * 9) * 0.45
-              return s, s
+          def make_capture_sound():
+              dur = 0.70
+              n = int(SR * dur)
+              t = np.arange(n, dtype=np.float64) / SR
+              f_hit = 46.0 + 135.0 * np.exp(-t * 26.0)
+              ph_hit = np.cumsum(f_hit) * (TAU / SR)
+              impact = np.sin(ph_hit) * np.exp(-t * 14.0) * 0.72
+              crack = band_noise(n, 450, 3600, 104) * np.exp(-t * 65.0) * 0.55
+              rift_env = smooth(0.03, 0.16, t) * np.exp(-np.maximum(0.0, t - 0.14) * 5.2)
+              rift_l = band_noise(n, 110, 620, 105) * rift_env * 0.42
+              rift_r = band_noise(n, 120, 650, 106) * rift_env * 0.42
+              l = np.tanh((impact + crack + rift_l) * 1.15) * edge_fade(n, 0.002, 0.08)
+              r = np.tanh((impact + np.roll(crack, 8) + rift_r) * 1.15) * edge_fade(n, 0.002, 0.08)
+              save_wav("capture.wav", l, r)
 
-          def win_s(t):
-              notes = [523.25, 659.25, 783.99, 1046.5]
-              k = min(3, int(t / 0.18))
-              tt = t - k * 0.18
-              s = (math.sin(TAU * notes[k] * tt) + 0.3 * math.sin(TAU * notes[k] * 2 * tt)) * math.exp(-tt * 3.2) * 0.35
-              return s, s
+          def make_blackhole_sound():
+              dur = 0.95
+              n = int(SR * dur)
+              t = np.arange(n, dtype=np.float64) / SR
+              env = smooth(0.02, 0.16, t) * (1.0 - smooth(0.55, 0.94, t))
+              f_sub = 132.0 * np.exp(-t * 2.15) + 28.0
+              ph_sub = np.cumsum(f_sub) * (TAU / SR)
+              sub = np.sin(ph_sub) * 0.65 + np.sin(ph_sub * 1.99) * 0.25
+              lfo_rate = 3.5 + 14.0 * (t / dur) ** 1.6
+              ph_lfo = np.cumsum(lfo_rate) * (TAU / SR)
+              swirl_l = 0.65 + 0.35 * np.sin(ph_lfo)
+              swirl_r = 0.65 + 0.35 * np.cos(ph_lfo)
+              wind_l = band_noise(n, 90, 950, 107) * swirl_l
+              wind_r = band_noise(n, 95, 980, 108) * swirl_r
+              gulp_t = np.maximum(0.0, t - 0.56)
+              gulp = (t > 0.56) * np.sin(TAU * (92.0 - 45.0 * gulp_t) * gulp_t) * np.exp(-gulp_t * 22.0) * 0.52
+              l = np.tanh((sub * env * 0.72 + wind_l * env * 0.55 + gulp) * 1.1) * edge_fade(n, 0.008, 0.07)
+              r = np.tanh((sub * env * 0.72 + wind_r * env * 0.55 + gulp) * 1.1) * edge_fade(n, 0.008, 0.07)
+              save_wav("blackhole.wav", l, r)
 
-          def ambient_s(t):
-              lfo = 0.6 + 0.4 * math.sin(TAU * 0.1 * t)
-              lfo2 = 0.5 + 0.5 * math.sin(TAU * 0.2 * t)
-              a = math.sin(TAU * 55.0 * t) * 0.20
-              b = math.sin(TAU * 82.5 * t) * 0.13 * lfo
-              c = math.sin(TAU * 110.0 * t) * 0.07 * lfo2
-              d = math.sin(TAU * 165.0 * t) * 0.04 * (1 - lfo2)
-              return a + b + c, a + d + c * 0.8
+          def make_check_sound():
+              dur = 0.85
+              n = int(SR * dur)
+              t = np.arange(n, dtype=np.float64) / SR
+              p1 = (
+                  np.sin(TAU * 293.66 * t) * 0.48
+                  + np.sin(TAU * 440.00 * t) * 0.34
+                  + np.sin(TAU * 587.33 * t) * 0.18
+              ) * np.exp(-t * 4.5) * smooth(0.0, 0.012, t)
+              t2 = np.maximum(0.0, t - 0.14)
+              p2 = (t > 0.14) * (
+                  np.sin(TAU * 349.23 * t2) * 0.45
+                  + np.sin(TAU * 523.25 * t2) * 0.34
+                  + np.sin(TAU * 698.46 * t2) * 0.22
+                  + np.sin(TAU * 1046.5 * t2) * 0.10
+              ) * np.exp(-t2 * 3.8) * smooth(0.0, 0.012, t2)
+              sub = np.sin(TAU * 73.42 * t) * np.exp(-t * 3.5) * 0.32 * smooth(0.0, 0.015, t)
+              l = (p1 + p2 * 0.95 + sub) * edge_fade(n, 0.005, 0.09) * 0.85
+              r = (np.roll(p1, 140) * 0.9 + p2 + sub) * edge_fade(n, 0.005, 0.09) * 0.85
+              save_wav("check.wav", l, r)
+
+          def make_win_sound():
+              dur = 2.30
+              n = int(SR * dur)
+              t = np.arange(n, dtype=np.float64) / SR
+              notes = [(0.00, 293.66), (0.13, 369.99), (0.26, 440.00), (0.39, 587.33), (0.54, 659.25), (0.70, 880.00)]
+              l = np.zeros(n, dtype=np.float64)
+              r = np.zeros(n, dtype=np.float64)
+              for idx, (st, f) in enumerate(notes):
+                  dt = np.maximum(0.0, t - st)
+                  active = (t >= st)
+                  env = active * smooth(0.0, 0.015, dt) * np.exp(-dt * 2.1)
+                  voice = (
+                      np.sin(TAU * f * dt) * 0.55
+                      + np.sin(TAU * f * 2.0 * dt) * 0.22 * np.exp(-dt * 3.0)
+                      + np.sin(TAU * f * 0.5 * dt) * 0.28
+                  ) * env
+                  pan = 0.35 + 0.30 * (idx / max(1, len(notes) - 1))
+                  l += voice * (1.0 - pan)
+                  r += voice * pan
+              pad_env = smooth(0.04, 0.45, t) * np.exp(-np.maximum(0.0, t - 0.6) * 1.45)
+              pad = (
+                  np.sin(TAU * 73.42 * t) * 0.35
+                  + np.sin(TAU * 146.83 * t) * 0.30
+                  + np.sin(TAU * 220.00 * t) * 0.22
+                  + np.sin(TAU * 369.99 * t) * 0.16
+              ) * pad_env
+              l = (l + pad + np.roll(r, int(0.18 * SR)) * 0.25) * edge_fade(n, 0.006, 0.22) * 0.75
+              r = (r + pad + np.roll(l, int(0.24 * SR)) * 0.25) * edge_fade(n, 0.006, 0.22) * 0.75
+              save_wav("win.wav", l, r)
+
+          def make_ambient_music():
+              T = 48.0
+              n = int(SR * T)
+              u = np.arange(n, dtype=np.float64) / n
+              t = u * T
+
+              def pad_voice(freq, pan=0.5, detune_k=1):
+                  k0 = max(1, int(round(freq * T)))
+                  ph0 = TAU * k0 * u
+                  ph1 = TAU * (k0 + detune_k) * u
+                  ph2 = TAU * max(1, k0 - detune_k) * u
+                  vl = (
+                      np.sin(ph0) * 0.48
+                      + np.sin(ph1) * 0.28
+                      + np.sin(ph0 * 2.0) * (0.14 + 0.06 * np.sin(TAU * 2.0 * u))
+                      + np.sin(ph0 * 3.0) * 0.04
+                  )
+                  vr = (
+                      np.sin(ph0 + 0.4) * 0.48
+                      + np.sin(ph2 + 0.7) * 0.28
+                      + np.sin(ph0 * 2.0 + 0.2) * (0.14 + 0.06 * np.cos(TAU * 2.0 * u))
+                      + np.sin(ph0 * 3.0) * 0.04
+                  )
+                  return vl * (1.0 - pan), vr * pan
+
+              chords = [
+                  (6.0,  [(73.42, 0.50), (146.83, 0.45), (220.00, 0.55), (261.63, 0.35), (329.63, 0.65), (349.23, 0.48)]),
+                  (18.0, [(58.27, 0.50), (116.54, 0.55), (174.61, 0.42), (220.00, 0.62), (293.66, 0.38), (349.23, 0.52)]),
+                  (30.0, [(98.00, 0.50), (196.00, 0.44), (233.08, 0.58), (293.66, 0.40), (349.23, 0.64), (440.00, 0.46)]),
+                  (42.0, [(55.00, 0.50), (110.00, 0.54), (164.81, 0.40), (196.00, 0.60), (246.94, 0.36), (329.63, 0.52)]),
+              ]
+
+              L = np.zeros(n, dtype=np.float64)
+              R = np.zeros(n, dtype=np.float64)
+              for center, notes in chords:
+                  d = np.abs(((t - center + T * 0.5) % T) - T * 0.5)
+                  w = np.clip(1.0 - d / 9.0, 0.0, 1.0)
+                  w = w * w * (3.0 - 2.0 * w)
+                  cL = np.zeros(n, dtype=np.float64)
+                  cR = np.zeros(n, dtype=np.float64)
+                  for idx, (freq, pan) in enumerate(notes):
+                      vl, vr = pad_voice(freq, pan=pan, detune_k=1 + (idx % 2))
+                      wt = 0.28 if idx == 0 else 0.16
+                      cL += vl * wt
+                      cR += vr * wt
+                  L += cL * w
+                  R += cR * w
+
+              breath = 0.85 + 0.15 * np.sin(TAU * 3.0 * u)
+              L *= breath
+              R *= breath
+
+              chimes = [
+                  (3.0,  587.33, 0.30), (9.5,  659.25, 0.72), (16.0, 523.25, 0.28),
+                  (22.0, 880.00, 0.68), (28.5, 587.33, 0.35), (34.0, 698.46, 0.74),
+                  (40.5, 659.25, 0.32),
+              ]
+              for st, freq, pan in chimes:
+                  for echo, gain in ((0.0, 0.11), (0.42, 0.055), (0.84, 0.025)):
+                      dt = t - (st + echo)
+                      mask = (dt >= 0.0) & (dt < 6.2)
+                      if not np.any(mask):
+                          continue
+                      tt = dt[mask]
+                      env = smooth(0.0, 0.025, tt) * np.exp(-tt * 1.45) * (1.0 - smooth(5.2, 6.2, tt))
+                      tone = (np.sin(TAU * freq * tt) + 0.25 * np.sin(TAU * freq * 2.0 * tt) * np.exp(-tt * 2.2)) * env * gain
+                      ep = pan if echo == 0.0 else (1.0 - pan if echo < 0.6 else pan)
+                      L[mask] += tone * (1.0 - ep)
+                      R[mask] += tone * ep
+
+              wind_l = band_noise(n, 45, 290, 201) * (0.045 + 0.025 * np.sin(TAU * 2.0 * u))
+              wind_r = band_noise(n, 48, 310, 202) * (0.045 + 0.025 * np.cos(TAU * 2.0 * u))
+              L = np.tanh((L + wind_l) * 0.85)
+              R = np.tanh((R + wind_r) * 0.85)
+              save_wav("ambient.wav", L, R)
 
           print("Sounds...")
-          create_wav("move.wav", 0.2, move_s)
-          create_wav("capture.wav", 0.4, capture_s)
-          create_wav("select.wav", 0.08, select_s)
-          create_wav("click.wav", 0.06, click_s)
-          create_wav("check.wav", 0.6, check_s)
-          create_wav("win.wav", 1.2, win_s)
-          create_wav("ambient.wav", 30.0, ambient_s, rate=22050)
+          make_move_sound()
+          make_capture_sound()
+          make_blackhole_sound()
+          make_select_sound()
+          make_click_sound()
+          make_check_sound()
+          make_win_sound()
+          make_ambient_music()
           print("Audio done")
 
           EOF
@@ -548,6 +757,7 @@ jobs:
       - name: Build app (Release)
         run: |
           xcodebuild -project VibeChess.xcodeproj -scheme VibeChess -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             clean build CONFIGURATION_BUILD_DIR=${{ github.workspace }}/build
 
@@ -564,11 +774,9 @@ jobs:
           VERSION="v4.0.${{ github.run_number }}"
           gh release create "$VERSION" VibeChess.ipa \
             --title "VibeChess $VERSION (photoreal graphics)" \
-            --notes "Версия 4.0, графика:
+            --notes "Версия 4.0:
+            - Свободный полёт доски в открытом космосе без постамента
+            - Чёрная дыра из-под клетки при съедении фигуры
+            - Обновлённая космическая музыка и объёмные звуковые эффекты
             - Фотореалистичные материалы: нормали, шероховатость, мрамор и орех
-            - Фигуры с золотой инкрустацией, конь с новым силуэтом
-            - Объёмные лучи света, пыль в лучах, блики и свечение солнца
-            - Планеты с облаками, атмосферой и кольцами Сатурна, туманность
-            - Отражающий постамент, мягкие тени, SSAO, bloom, виньетка
-            - Искры при взятии и салют при мате
-            - Настройка качества графики"
+            - Объёмные лучи света, пыль в лучах, планеты с атмосферой и кольцами Сатурна"
