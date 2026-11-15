@@ -2426,7 +2426,7 @@ final class BoardController {
                 node.eulerAngles = SCNVector3(0.32 * u, spin, 0.22 * u)
                 node.position = SCNVector3(
                     startPos.x + radius * cos(spin),
-                    restY + 0.16 - 1.08 * accel,
+                    self.restY + 0.16 - 1.08 * accel,
                     startPos.z + radius * sin(spin)
                 )
                 node.opacity = CGFloat(max(0.0, 1.0 - pow(u, 2.2)))
