@@ -4112,7 +4112,6 @@ struct GameHUDOverlay: View {
         return String(format: "%02d:%02d", s / 60, s % 60)
     }
 }
-
 struct PromotionOverlay: View {
     @ObservedObject var gm: GameManager
 
@@ -4120,4 +4119,303 @@ struct PromotionOverlay: View {
         ZStack {
             Color.black.opacity(0.6).ignoresSafeArea()
             VStack(spacing: 14) {
-                Text("
+                Text("ПРЕВРАЩЕНИЕ ПЕШКИ")
+                    .font(mono(14))
+                    .foregroundColor(.white)
+                HStack(spacing: 10) {
+                    promoButton("♕", "Ферзь", 5)
+                    promoButton("♖", "Ладья", 4)
+                    promoButton("♗", "Слон", 3)
+                    promoButton("♘", "Конь", 2)
+                }
+                Button("Отмена") { gm.cancelPromotion() }
+                    .font(mono(12))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            .padding(22)
+            .glass(22)
+        }
+    }
+
+    private func promoButton(_ glyph: String, _ name: String, _ type: Int) -> some View {
+        Button(action: { gm.choosePromotion(type) }) {
+            VStack(spacing: 4) {
+                Text(glyph).font(.system(size: 38))
+                Text(name).font(mono(10))
+            }
+            .foregroundColor(.white)
+            .frame(width: 66, height: 78)
+            .background(Color.cyan.opacity(0.25))
+            .cornerRadius(12)
+        }
+    }
+}
+
+struct GameOverOverlay: View {
+    @ObservedObject var gm: GameManager
+    @State private var hidden = false
+
+    var body: some View {
+        Group {
+            if !hidden {
+                ZStack {
+                    Color.black.opacity(0.55).ignoresSafeArea()
+                    VStack(spacing: 14) {
+                        Text("ПАРТИЯ ОКОНЧЕНА")
+                            .font(mono(13))
+                            .foregroundColor(.white.opacity(0.7))
+                        Text(gm.gameResult?.title ?? "")
+                            .font(mono(20, .black))
+                            .foregroundColor(.cyan)
+                            .multilineTextAlignment(.center)
+                        Button(action: { gm.restartGame() }) {
+                            Text("РЕВАНШ")
+                                .font(mono(14))
+                                .foregroundColor(.black)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color.cyan)
+                                .cornerRadius(12)
+                        }
+                        Button(action: { hidden = true }) {
+                            Text("Осмотреть доску").font(mono(12)).foregroundColor(.white)
+                        }
+                        Button(action: { gm.exitToMenu() }) {
+                            Text("В главное меню").font(mono(12)).foregroundColor(.red)
+                        }
+                    }
+                    .padding(24)
+                    .glass(22)
+                    .padding(.horizontal, 30)
+                }
+            }
+        }
+    }
+}
+
+struct PauseMenuOverlay: View {
+    @ObservedObject var gm: GameManager
+    @Binding var showSaves: Bool
+    @Binding var showSettings: Bool
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.75).ignoresSafeArea()
+            VStack(spacing: 14) {
+                Text("ПАУЗА").font(mono(26, .black)).foregroundColor(.white)
+                Button("Продолжить") { gm.resumeGame() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.cyan)
+                Button("Настройки") { showSettings = true }
+                    .buttonStyle(.bordered)
+                Button("Сохранить партию") { showSaves = true }
+                    .buttonStyle(.bordered)
+                Button("Новая партия") {
+                    gm.isPaused = false
+                    gm.restartGame()
+                }
+                .buttonStyle(.bordered)
+                Button("Выход в главное меню") { gm.exitToMenu() }
+                    .foregroundColor(.red)
+            }
+            .padding(26)
+            .glass(20)
+        }
+    }
+}
+
+struct AIChatModalView: View {
+    @ObservedObject var gm: GameManager
+    @Environment(\.dismiss) var dismiss
+    @State private var input = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(gm.chat) { msg in
+                                bubble(msg).id(msg.id)
+                            }
+                        }
+                        .padding()
+                    }
+                    .onChange(of: gm.chat.count) { _ in
+                        if let last = gm.chat.last {
+                            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                        }
+                    }
+                }
+                Divider()
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Button("🧠 Лучший ход?") { gm.sendUserMessage("Какой ход лучший?") }
+                            .buttonStyle(.bordered)
+                            .tint(.cyan)
+                        Button("⚖️ Оцени позицию") { gm.sendUserMessage("Оцени шансы") }
+                            .buttonStyle(.bordered)
+                            .tint(.cyan)
+                    }
+                    .padding(.horizontal)
+                }
+                HStack {
+                    TextField("Сообщение ИИ...", text: $input)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { send() }
+                    Button(action: { send() }) {
+                        Image(systemName: "arrow.up.circle.fill").font(.title2).foregroundColor(.cyan)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 10)
+                .padding(.top, 4)
+            }
+            .navigationTitle("AI Каспаров-9000")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Закрыть") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func send() {
+        gm.sendUserMessage(input)
+        input = ""
+    }
+
+    @ViewBuilder private func bubble(_ msg: ChatMessage) -> some View {
+        if msg.sender == "Ты" {
+            HStack {
+                Spacer()
+                VStack(alignment: .trailing) {
+                    Text(msg.sender).font(.caption2).foregroundColor(.gray)
+                    Text(msg.text).padding(10).background(Color.cyan.opacity(0.3)).cornerRadius(12)
+                }
+            }
+        } else {
+            HStack {
+                VStack(alignment: .leading) {
+                    Text(msg.sender).font(.caption2).foregroundColor(.gray)
+                    Text(msg.text).padding(10).background(Color.gray.opacity(0.2)).cornerRadius(12)
+                }
+                Spacer()
+            }
+        }
+    }
+}
+
+struct SettingsModalView: View {
+    @ObservedObject var gm: GameManager
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(header: Text("Звук и музыка")) {
+                    Toggle("Звуковые эффекты", isOn: $gm.sfxEnabled)
+                    Toggle("Фоновая музыка космоса", isOn: $gm.musicEnabled)
+                    Toggle("Голос комментатора", isOn: $gm.voiceEnabled)
+                }
+                Section(header: Text("Управление и гироскоп")) {
+                    Picker("Режим фигур", selection: $gm.controlMode) {
+                        ForEach(ControlMode.allCases) { c in Text(c.rawValue).tag(c) }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("В режиме «Руками (Физика)» фигуры можно брать и переносить пальцем, сталкивать друг с другом и опрокидывать двойным нажатием.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Toggle("Камера по гироскопу", isOn: $gm.gyroEnabled)
+                    if gm.gyroEnabled {
+                        Button("Калибровать гироскоп") {
+                            gm.space.recalibrateGyro()
+                        }
+                    }
+                }
+                Section(header: Text("Графика RTX")) {
+                    Picker("Качество", selection: $gm.graphicsQuality) {
+                        ForEach(GraphicsQuality.allCases) { q in Text(q.rawValue).tag(q) }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Ультра: Metal-шейдеры, лакировка ClearCoat, глубина резкости боке, TAA, тени 4K, взрывы метеоритов и туманности.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Section(header: Text("Игра")) {
+                    Toggle("Подсвечивать доступные ходы", isOn: $gm.showHints)
+                    Picker("Сложность бота", selection: $gm.difficulty) {
+                        ForEach(BotDifficulty.allCases) { d in Text(d.rawValue).tag(d) }
+                    }
+                }
+            }
+            .navigationTitle("Настройки")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+struct SavesModalView: View {
+    @ObservedObject var gm: GameManager
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !gm.inMenu {
+                    Section("Сохранить партию") {
+                        ForEach(1...3, id: \.self) { num in
+                            Button("Сохранить в слот #\(num)") {
+                                gm.saveToSlot(slotId: "slot_\(num)", title: "Слот #\(num)")
+                                dismiss()
+                            }
+                        }
+                    }
+                }
+                Section("Загрузить партию") {
+                    if gm.saveSlots.isEmpty {
+                        Text("Нет сохранений").foregroundColor(.secondary)
+                    } else {
+                        ForEach(gm.saveSlots) { slot in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(slot.title).font(.headline)
+                                    Text("\(slot.dateString) • Ход \(slot.board.fullmove)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Button("Загрузить") {
+                                    gm.loadFromSlot(slot)
+                                    dismiss()
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+                            .swipeActions {
+                                Button(role: .destructive) {
+                                    gm.deleteSlot(slot.id)
+                                } label: {
+                                    Label("Удалить", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Слоты сохранений")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Закрыть") { dismiss() }
+                }
+            }
+        }
+    }
+}
+                
