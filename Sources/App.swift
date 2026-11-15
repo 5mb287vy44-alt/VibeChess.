@@ -1554,9 +1554,9 @@ enum PieceBuilder {
             if i == 0 { p.move(to: q) } else { p.addLine(to: q) }
         }
         p.close()
+        p.flatness = 0.05
         let shape = SCNShape(path: p, extrusionDepth: 0.30)
         shape.chamferRadius = 0.04
-        shape.flatness = 0.05
         shape.materials = [mat]
         let node = SCNNode(geometry: shape)
         let bb = node.boundingBox
@@ -2405,7 +2405,6 @@ final class SpaceScene {
         fl.reflectionFalloffStart = 0
         fl.reflectionFalloffEnd = 4.5
         fl.reflectionResolutionScaleFactor = 0.6
-        fl.reflectionSampleCount = 4
         let fm = SCNMaterial()
         fm.lightingModel = .physicallyBased
         fm.diffuse.contents = UIColor(red: 0.02, green: 0.022, blue: 0.03, alpha: 1)
@@ -2518,6 +2517,9 @@ final class SpaceScene {
         switch q {
         case .standard:
             cam.wantsHDR = false
+            cam.bloomIntensity = 0
+            cam.saturation = 1.0
+            cam.contrast = 0.0
             cam.screenSpaceAmbientOcclusionIntensity = 0
             cam.vignettingIntensity = 0
             cam.grainIntensity = 0
@@ -3325,4 +3327,3 @@ struct SavesModalView: View {
         }
     }
 }
-// ==================== КОНЕЦ ФАЙЛА ====================
