@@ -17,7 +17,7 @@ jobs:
           if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
           xcodebuild -version
 
-      - name: Generate textures, normal maps, effects and sounds
+      - name: Generate 4K textures, normal maps, effects and sounds
         run: |
           mkdir -p Sources/Assets.xcassets/AppIcon.appiconset
 
@@ -43,7 +43,7 @@ jobs:
           ./.venv/bin/pip install --quiet numpy || ./.venv/bin/pip install --quiet numpy
           export PYTHONIOENCODING=utf-8
           cat << 'EOF' > gen_assets.py
-          import numpy as np, zlib, struct, os, math, wave, random
+          import numpy as np, zlib, struct, os, math, wave, random, gc
           random.seed(11)
 
           OUT = os.environ.get("OUT_DIR", "Sources")
@@ -63,7 +63,7 @@ jobs:
                   return cc + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
               data = b'\x89PNG\r\n\x1a\n'
               data += chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, ctype, 0, 0, 0))
-              data += chunk(b'IDAT', zlib.compress(raw.tobytes(), 6))
+              data += chunk(b'IDAT', zlib.compress(raw.tobytes(), 3))
               data += chunk(b'IEND', b'')
               with open(path, 'wb') as f:
                   f.write(data)
@@ -83,8 +83,8 @@ jobs:
               return (n & np.uint32(0xffff)).astype(np.float32) / 65535.0
 
           def vnoise(x, y, px, py, seed):
-              xi = np.floor(x).astype(np.int64)
-              yi = np.floor(y).astype(np.int64)
+              xi = np.floor(x).astype(np.int32)
+              yi = np.floor(y).astype(np.int32)
               xf = (x - xi).astype(np.float32)
               yf = (y - yi).astype(np.float32)
               x0 = xi % px; x1 = (x0 + 1) % px
@@ -126,59 +126,85 @@ jobs:
               return u8(n * 0.5 + 0.5)
 
           def make_wood():
-              w = h = 1024
+              w = h = 4096
               U, V = grid(w, h)
-              warp = fbm(U, V, 3, 3, 4, 11)
-              rings = 0.5 + 0.5 * np.sin(2 * np.pi * (V * 16 + warp * 5.5 + 0.6 * fbm(U, V, 2, 6, 3, 15)))
-              fibre = fbm(U, V, 4, 128, 3, 5)
-              pores = (fbm(U, V, 96, 12, 2, 9) > 0.66).astype(np.float32)
-              t = np.clip(0.18 + 0.52 * rings + 0.30 * fibre - 0.18 * pores, 0, 1)
-              col = mix((60, 34, 18), (158, 100, 56), t)
-              col *= (0.94 + 0.12 * fbm(U, V, 8, 8, 2, 19))[..., None]
+              warp = fbm(U, V, 3, 3, 5, 11)
+              rings = 0.5 + 0.5 * np.sin(2 * np.pi * (V * 22 + warp * 6.5 + 0.7 * fbm(U, V, 2, 8, 4, 15)))
+              cathedral = (0.5 + 0.5 * np.sin(2 * np.pi * (V * 44 + warp * 12.0))) ** 2
+              fibre = fbm(U, V, 8, 256, 4, 5)
+              rays = fbm(U, V, 192, 16, 2, 27)
+              pores = (fbm(U, V, 160, 24, 2, 9) > 0.67).astype(np.float32)
+              t = np.clip(0.16 + 0.44 * rings + 0.16 * cathedral + 0.24 * fibre + 0.08 * (rays - 0.5) - 0.22 * pores, 0, 1)
+              col = mix((46, 24, 12), (146, 88, 46), t)
+              col *= (0.90 + 0.20 * fbm(U, V, 10, 10, 3, 19))[..., None]
+              col = mix(col, (32, 16, 8), pores * 0.55)
               save_png(out("wood_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
-              hm = 0.5 * rings + 0.35 * fibre - 0.25 * pores
-              save_png(out("wood_normal.png"), normal_map(hm, 7.0))
-              save_png(out("wood_rough.png"), u8(0.36 + 0.22 * rings + 0.15 * pores))
+              del col
+              hm = 0.48 * rings + 0.18 * cathedral + 0.34 * fibre - 0.32 * pores
+              save_png(out("wood_normal.png"), normal_map(hm, 12.0))
+              save_png(out("wood_rough.png"), u8(0.24 + 0.22 * rings + 0.12 * fibre + 0.26 * pores))
+              gc.collect()
 
           def make_marble():
-              w = h = 1024
+              w = h = 4096
               U, V = grid(w, h)
               turb = fbm(U, V, 3, 3, 7, 21, 0.62)
               turb2 = fbm(U, V, 4, 4, 7, 25, 0.60)
-              t1 = np.abs(np.sin(2 * np.pi * (U * 1.0 + V * 2.0 + turb * 3.2)))
-              t2 = np.abs(np.sin(2 * np.pi * (U * 2.0 - V * 1.0 + turb2 * 3.6)))
-              v1 = (1 - t1) ** 4.5
-              v2 = (1 - t2) ** 7 * 0.6
+              t1 = np.abs(np.sin(2 * np.pi * (U * 1.0 + V * 2.0 + turb * 3.4)))
+              t2 = np.abs(np.sin(2 * np.pi * (U * 2.0 - V * 1.0 + turb2 * 3.8)))
+              t3 = np.abs(np.sin(2 * np.pi * (U * 3.0 + V * 1.0 + turb * 4.5)))
+              v1 = (1 - t1) ** 5.0
+              v2 = (1 - t2) ** 7.5 * 0.65
+              gold_v = (1 - t3) ** 10.0 * 0.85
               cloud = fbm(U, V, 4, 4, 6, 31)
-              mott = fbm(U, V, 12, 12, 4, 37)
-              base = 0.90 + 0.10 * (cloud - 0.5) + 0.05 * (mott - 0.5)
+              mott = fbm(U, V, 16, 16, 4, 37)
+              base = 0.88 + 0.10 * (cloud - 0.5) + 0.06 * (mott - 0.5)
               vein = np.clip(0.75 * v1 + v2, 0, 1) * (0.5 + 0.8 * mott)
-              r = base * 247 - vein * 80
-              g = base * 243 - vein * 78
-              b = base * 234 - vein * 66 + 6 * cloud
+              r = base * 238 - vein * 82 + gold_v * 35
+              g = base * 233 - vein * 80 - gold_v * 5
+              b = base * 224 - vein * 66 + 6 * cloud - gold_v * 55
               col = np.stack([r, g, b], axis=-1)
-              col += (hash2(np.arange(w)[None, :].repeat(h, 0), np.arange(h)[:, None].repeat(w, 1), 9) - 0.5)[..., None] * 4
+              noise = (hash2(np.arange(w, dtype=np.uint32)[None, :], np.arange(h, dtype=np.uint32)[:, None], 9) - 0.5) * 3.5
+              col += noise[..., None]
               save_png(out("marble_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
-              save_png(out("marble_normal.png"), normal_map(0.4 * vein + 0.2 * cloud, 2.5))
-              save_png(out("marble_rough.png"), u8(0.12 + 0.18 * cloud + 0.1 * vein))
+              del col
+              save_png(out("marble_normal.png"), normal_map(0.45 * vein + 0.35 * gold_v + 0.2 * cloud, 4.5))
+              save_png(out("marble_rough.png"), u8(0.09 + 0.16 * cloud + 0.12 * vein))
+              gc.collect()
 
           def make_piece_textures():
-              w, h = 512, 512
+              w, h = 4096, 4096
               U, V = grid(w, h)
-              wv = fbm(U, V, 3, 3, 5, 61)
-              t = np.abs(np.sin(2 * np.pi * (U * 3 + V * 2 + wv * 2.5)))
-              vein = (1 - t) ** 5 * (0.4 + 0.6 * fbm(U, V, 8, 8, 3, 65))
-              cloud = fbm(U, V, 4, 4, 4, 63)
-              base = 0.92 + 0.06 * (cloud - 0.5)
-              col = np.stack([base * 246 - vein * 70, base * 238 - vein * 74, base * 218 - vein * 70], axis=-1)
+              wv = fbm(U, V, 4, 4, 6, 61)
+              t = np.abs(np.sin(2 * np.pi * (U * 3 + V * 2 + wv * 2.8)))
+              vein = (1 - t) ** 5.5 * (0.4 + 0.6 * fbm(U, V, 10, 10, 4, 65))
+              cloud = fbm(U, V, 5, 5, 5, 63)
+              base = 0.90 + 0.07 * (cloud - 0.5)
+              col = np.stack([base * 236 - vein * 68, base * 226 - vein * 72, base * 204 - vein * 68], axis=-1)
               save_png(out("piece_white.png"), np.clip(col, 0, 255).astype(np.uint8))
-              wv2 = fbm(U, V, 3, 3, 5, 71)
-              t2 = np.abs(np.sin(2 * np.pi * (U * 2 + V * 3 + wv2 * 2.8)))
-              vein2 = (1 - t2) ** 6 * (0.3 + 0.7 * fbm(U, V, 8, 8, 3, 75))
-              cloud2 = fbm(U, V, 5, 5, 4, 73)
-              b2 = 14 + 14 * cloud2
-              col2 = np.stack([b2 + vein2 * 120, b2 + vein2 * 105, b2 + vein2 * 70], axis=-1)
+              del col
+
+              wv2 = fbm(U, V, 4, 4, 6, 71)
+              t2 = np.abs(np.sin(2 * np.pi * (U * 2 + V * 3 + wv2 * 3.0)))
+              vein2 = (1 - t2) ** 7.0 * (0.35 + 0.65 * fbm(U, V, 10, 10, 4, 75))
+              gold2 = (1 - np.abs(np.sin(2 * np.pi * (U * 4 - V * 2 + wv2 * 3.5)))) ** 11.0
+              cloud2 = fbm(U, V, 6, 6, 5, 73)
+              b2 = 12 + 14 * cloud2
+              col2 = np.stack([
+                  b2 + vein2 * 105 + gold2 * 185,
+                  b2 + vein2 * 95 + gold2 * 145,
+                  b2 + vein2 * 70 + gold2 * 55
+              ], axis=-1)
               save_png(out("piece_black.png"), np.clip(col2, 0, 255).astype(np.uint8))
+              del col2, U, V, wv, wv2
+
+              w2, h2 = 2048, 2048
+              U2, V2 = grid(w2, h2)
+              pm = fbm(U2, V2, 12, 12, 5, 83)
+              pv = (1 - np.abs(np.sin(2 * np.pi * (U2 * 3 + V2 * 2 + pm * 2.5)))) ** 6
+              save_png(out("piece_normal.png"), normal_map(0.55 * pv + 0.45 * pm, 3.8))
+              save_png(out("piece_rough.png"), u8(0.11 + 0.14 * pm + 0.08 * pv))
+              gc.collect()
 
           def add_craters(hm, count, seed, rmin, rmax, depth):
               H, W = hm.shape
@@ -197,10 +223,10 @@ jobs:
               return hm
 
           def make_earth():
-              w, h = 2048, 1024
+              w, h = 4096, 2048
               U, V = grid(w, h)
               lat = np.abs(V - 0.5) * 2
-              e = 0.75 * fbm(U, V, 4, 2, 6, 41) + 0.25 * fbm(U, V, 16, 8, 4, 43)
+              e = 0.75 * fbm(U, V, 4, 2, 7, 41) + 0.25 * fbm(U, V, 20, 10, 4, 43)
               e = e - 0.10 * lat ** 2
               sea = 0.455
               depth = np.clip((sea - e) / sea, 0, 1)
@@ -220,17 +246,19 @@ jobs:
               polar = smooth(0.93, 0.995, lat) * 0.85
               col = col * (1 - polar[..., None]) + np.array([245, 248, 252], dtype=np.float32) * polar[..., None]
               save_png(out("earth_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
-              c = fbm(U, V, 6, 3, 6, 77) * 0.7 + fbm(U, V, 14, 7, 4, 79) * 0.3
+              del col
+              c = fbm(U, V, 6, 3, 6, 77) * 0.7 + fbm(U, V, 16, 8, 4, 79) * 0.3
               a = np.clip((c - 0.50) * 3.2, 0, 1) * 0.92
               rgba = np.zeros((h, w, 4), dtype=np.uint8)
               rgba[..., :3] = 255
               rgba[..., 3] = u8(a)
               save_png(out("earth_clouds.png"), rgba)
+              gc.collect()
 
-          def make_rock(name, base0, base1, craters, seed, w=1024, h=512):
+          def make_rock(name, base0, base1, craters, seed, w=2048, h=1024):
               U, V = grid(w, h)
               hm = 0.6 * fbm(U, V, 6, 3, 6, seed) + 0.4 * fbm(U, V, 24, 12, 4, seed + 3)
-              hm = add_craters(hm.astype(np.float32), craters, seed, 5, 24, 0.18)
+              hm = add_craters(hm.astype(np.float32), craters, seed, max(4, w // 180), max(16, w // 32), 0.18)
               n = fbm(U, V, 5, 3, 5, seed + 9)
               t = np.clip(0.25 + 0.6 * n + 0.8 * (hm - hm.mean()), 0, 1)
               col = mix(base0, base1, t)
@@ -239,10 +267,11 @@ jobs:
                   cap = smooth(0.92, 0.97, lat)
                   col = col * (1 - cap[..., None]) + np.array([240, 236, 236], dtype=np.float32) * cap[..., None]
               save_png(out(name + "_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
-              save_png(out(name + "_normal.png"), normal_map(hm, 9.0))
+              save_png(out(name + "_normal.png"), normal_map(hm, 9.5))
+              gc.collect()
 
           def make_venus():
-              w, h = 512, 256
+              w, h = 2048, 1024
               U, V = grid(w, h)
               turb = fbm(U, V, 4, 3, 5, 111)
               chev = 0.5 + 0.5 * np.sin(V * 28 + 3.8 * turb + 1.8 * np.cos(U * 2 * np.pi))
@@ -252,12 +281,12 @@ jobs:
               save_png(out("venus_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
 
           def make_jupiter():
-              w, h = 1024, 512
+              w, h = 2048, 1024
               U, V = grid(w, h)
-              turb = fbm(U, V, 8, 4, 5, 121)
-              turb2 = fbm(U, V, 18, 9, 4, 123)
+              turb = fbm(U, V, 8, 4, 6, 121)
+              turb2 = fbm(U, V, 20, 10, 4, 123)
               vw = V + 0.028 * (turb - 0.5) + 0.014 * (turb2 - 0.5)
-              b1 = 0.5 + 0.5 * np.sin(vw * 58)
+              b1 = 0.5 + 0.5 * np.sin(vw * 62)
               b2 = 0.5 + 0.5 * np.sin(vw * 24 + 1.1)
               eq = np.exp(-((vw - 0.50) / 0.08) ** 2)
               col = mix((148, 98, 62), (238, 220, 190), np.clip(0.55 * b1 + 0.35 * b2 + 0.25 * eq, 0, 1))
@@ -268,23 +297,24 @@ jobs:
               grs = np.exp(-((du / 0.055) ** 2 + (dv / 0.042) ** 2))
               col = mix(col, (204, 78, 42), np.clip(grs * 0.90, 0, 1))
               save_png(out("jupiter_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
+              gc.collect()
 
           def make_saturn():
-              w, h = 1024, 512
+              w, h = 2048, 1024
               U, V = grid(w, h)
-              turb = fbm(U, V, 6, 3, 4, 81)
+              turb = fbm(U, V, 6, 3, 5, 81)
               band = 0.5 + 0.5 * np.sin(V * 95 + turb * 4.5)
               band2 = 0.5 + 0.5 * np.sin(V * 31 + 1.7)
               n = fbm(U, V, 12, 6, 3, 91)
               t = np.clip(0.22 + 0.42 * band + 0.18 * band2 + 0.18 * n, 0, 1)
               col = mix((138, 108, 70), (240, 214, 160), t)
               save_png(out("saturn_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
-              s = 1024
+              s = 2048
               U, V = grid(s, s)
               r = np.sqrt((U - 0.5) ** 2 + (V - 0.5) ** 2) / 0.5
               inner, outer = 0.50, 1.0
               prof = smooth(inner, inner + 0.02, r) * (1 - smooth(outer - 0.03, outer, r))
-              bands = 0.55 + 0.45 * np.sin(r * 120) * np.sin(r * 47 + 1.3)
+              bands = 0.55 + 0.45 * np.sin(r * 130) * np.sin(r * 49 + 1.3)
               gap = 1 - 0.9 * np.exp(-((r - 0.80) / 0.018) ** 2)
               fine = 0.8 + 0.2 * fbm(r, r * 0, 256, 1, 2, 95)
               alpha = np.clip(prof * bands * gap * fine * 0.95, 0, 1)
@@ -293,16 +323,17 @@ jobs:
               rgba[..., :3] = np.clip(c, 0, 255).astype(np.uint8)
               rgba[..., 3] = u8(alpha)
               save_png(out("saturn_ring.png"), rgba)
+              gc.collect()
 
           def make_uranus():
-              w, h = 512, 256
+              w, h = 2048, 1024
               U, V = grid(w, h)
               band = 0.5 + 0.5 * np.sin(V * 24)
               n = fbm(U, V, 6, 3, 4, 141)
               t = np.clip(0.35 + 0.35 * band + 0.30 * n, 0, 1)
               col = mix((102, 198, 214), (186, 240, 246), t)
               save_png(out("uranus_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
-              s = 512
+              s = 1024
               U, V = grid(s, s)
               r = np.sqrt((U - 0.5) ** 2 + (V - 0.5) ** 2) / 0.5
               prof = smooth(0.56, 0.59, r) * (1 - smooth(0.92, 0.96, r))
@@ -314,7 +345,7 @@ jobs:
               save_png(out("uranus_ring.png"), rgba)
 
           def make_neptune():
-              w, h = 512, 256
+              w, h = 2048, 1024
               U, V = grid(w, h)
               turb = fbm(U, V, 8, 4, 5, 151)
               band = 0.5 + 0.5 * np.sin(V * 36 + turb * 3.0)
@@ -328,7 +359,7 @@ jobs:
               save_png(out("neptune_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
 
           def make_pluto():
-              w, h = 512, 256
+              w, h = 2048, 1024
               U, V = grid(w, h)
               n = fbm(U, V, 6, 3, 5, 161)
               col = mix((116, 78, 58), (206, 174, 146), n)
@@ -341,19 +372,19 @@ jobs:
               save_png(out("pluto_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
 
           def make_asteroid():
-              make_rock("asteroid", (58, 54, 52), (138, 130, 122), 70, 171, w=256, h=256)
+              make_rock("asteroid", (58, 54, 52), (138, 130, 122), 70, 171, w=512, h=512)
 
           def make_sun():
-              w, h = 1024, 512
+              w, h = 2048, 1024
               U, V = grid(w, h)
               t = fbm(U, V, 8, 4, 6, 101)
-              t2 = fbm(U, V, 24, 12, 3, 103)
-              s = np.clip(0.35 + 0.7 * (t - 0.5) + 0.3 * (t2 - 0.5), 0, 1)
-              col = mix((220, 70, 8), (255, 236, 150), s ** 0.8)
+              t2 = fbm(U, V, 28, 14, 4, 103)
+              s = np.clip(0.35 + 0.7 * (t - 0.5) + 0.35 * (t2 - 0.5), 0, 1)
+              col = mix((220, 70, 8), (255, 240, 160), s ** 0.8)
               save_png(out("sun_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
 
           def make_sky():
-              w, h = 2048, 1024
+              w, h = 4096, 2048
               U, V = grid(w, h)
               n1 = fbm(U, V, 3, 2, 6, 201)
               n2 = fbm(U, V, 5, 3, 6, 211)
@@ -365,7 +396,7 @@ jobs:
               neb4 = np.clip((n4 - 0.46) * 2.6, 0, 1) ** 1.55
               band_c = 0.5 + 0.14 * np.sin(2 * np.pi * U * 1.0)
               band = np.exp(-((V - band_c) / 0.13) ** 2)
-              dust = fbm(U, V, 10, 5, 5, 231)
+              dust = fbm(U, V, 12, 6, 5, 231)
               col = np.zeros((h, w, 3), dtype=np.float32)
               col += neb1[..., None] * np.array([0.07, 0.28, 0.52], dtype=np.float32)
               col += neb2[..., None] * np.array([0.48, 0.11, 0.38], dtype=np.float32)
@@ -375,7 +406,7 @@ jobs:
               col *= (1 - 0.68 * (band * np.clip((dust - 0.55) * 3, 0, 1)))[..., None]
               col += 0.005
               r = np.random.default_rng(5)
-              count = 22000
+              count = 32000
               sx = r.integers(0, w, count); sy = r.integers(0, h, count)
               br = r.random(count) ** 3.8
               tint = r.random(count)
@@ -386,9 +417,11 @@ jobs:
                       for ch, mult in enumerate((1.0 - 0.3 * tint, 1.0 - 0.1 * tint, 0.7 + 0.3 * tint)):
                           np.add.at(col[..., ch], (yy, xx), br * fall * mult * (0.28 + 1.0 * band[yy, xx]))
               save_png(out("sky_nebula.png"), u8(np.clip(col, 0, 1) ** 0.85))
+              del col
+              gc.collect()
 
           def make_env():
-              w, h = 1024, 512
+              w, h = 2048, 1024
               U, V = grid(w, h)
               top = np.array([0.08, 0.14, 0.28], dtype=np.float32)
               hor = np.array([0.38, 0.32, 0.34], dtype=np.float32)
@@ -427,7 +460,7 @@ jobs:
               return out_a
 
           def make_fx():
-              s = 256
+              s = 512
               U, V = grid(s, s)
               X = (U - 0.5) * 2; Y = (V - 0.5) * 2
               R = np.sqrt(X * X + Y * Y)
@@ -435,7 +468,7 @@ jobs:
               save_png(out("fx_glow_warm.png"), rgba_additive((255, 170, 90), np.exp(-R * R * 3.6) * (R < 1)))
               save_png(out("fx_dust.png"), rgba_additive((255, 235, 200), np.exp(-R * R * 9) * (R < 1)))
               save_png(out("fx_spark.png"), rgba_additive((255, 220, 140), np.exp(-R * R * 16) * (R < 1)))
-              w2, h2 = 512, 64
+              w2, h2 = 1024, 128
               U2, V2 = grid(w2, h2)
               X2 = (U2 - 0.5) * 2; Y2 = (V2 - 0.5) * 2
               streak = np.exp(-(X2 / 0.55) ** 2) * np.exp(-(Y2 / 0.07) ** 2)
@@ -451,7 +484,7 @@ jobs:
                   star += np.exp(-(perp / 0.012) ** 2) * np.exp(-R3 * 2.2)
               star += np.exp(-R3 * R3 * 30)
               save_png(out("fx_burst.png"), rgba_additive((255, 236, 200), star * (R3 < 1)))
-              bw, bh = 128, 512
+              bw, bh = 256, 1024
               U4, V4 = grid(bw, bh)
               prof = np.exp(-((U4 - 0.5) / 0.20) ** 2) * (1 - V4) ** 1.4 * smooth(0.0, 0.03, 1 - V4)
               save_png(out("fx_beam.png"), rgba_additive((255, 226, 178), prof))
@@ -486,7 +519,7 @@ jobs:
               save_png(out("hl_ring_red.png"), rr)
 
           def make_blackhole_fx():
-              s = 512
+              s = 1024
               U, V = grid(s, s)
               X = (U - 0.5) * 2
               Y = (V - 0.5) * 2
@@ -515,10 +548,11 @@ jobs:
               ring_alpha = np.clip((photon + 0.7 * arc_top + lens) * smooth(0.33, 0.355, R) * (1 - smooth(0.84, 1.0, R)) * doppler_r, 0, 1)
               ring_col = mix((195, 115, 255), (255, 246, 215), np.clip(photon * 1.25, 0, 1))
               save_png(out("fx_blackhole_ring.png"), rgba_map(ring_col, ring_alpha))
+              gc.collect()
 
           def make_nebulae():
               def make_neb(filename, c_in, c_out, seed):
-                  s = 512
+                  s = 1024
                   U, V = grid(s, s)
                   X = (U - 0.5) * 2
                   Y = (V - 0.5) * 2
@@ -549,7 +583,7 @@ jobs:
               save_png(out("fx_comet_tail.png"), rgba_map(col, alpha))
 
           def make_explosion_fx():
-              s = 256
+              s = 512
               U, V = grid(s, s)
               X = (U - 0.5) * 2
               Y = (V - 0.5) * 2
@@ -600,10 +634,10 @@ jobs:
           import time
           t0 = time.time()
           for fn in (make_wood, make_marble, make_piece_textures,
-                     lambda: make_rock("mercury", (72, 68, 66), (168, 162, 154), 130, 31, 512, 256),
+                     lambda: make_rock("mercury", (72, 68, 66), (168, 162, 154), 140, 31, 2048, 1024),
                      make_venus, make_earth,
-                     lambda: make_rock("mars", (95, 40, 24), (210, 118, 72), 90, 61),
-                     lambda: make_rock("moon", (70, 70, 72), (200, 198, 192), 160, 131),
+                     lambda: make_rock("mars", (95, 40, 24), (210, 118, 72), 110, 61, 2048, 1024),
+                     lambda: make_rock("moon", (70, 70, 72), (200, 198, 192), 180, 131, 2048, 1024),
                      make_jupiter, make_saturn, make_uranus, make_neptune, make_pluto, make_asteroid,
                      make_sun, make_sky, make_env, make_fx, make_blackhole_fx, make_nebulae, make_comet_fx, make_explosion_fx, make_icon):
               fn()
@@ -911,13 +945,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="v6.0.${{ github.run_number }}"
+          VERSION="v7.0.${{ github.run_number }}"
           gh release create "$VERSION" VibeChess.ipa \
-            --title "VibeChess $VERSION (AAA RTX Shaders + Physics)" \
-            --notes "Версия 6.0:
-            - AAA графика: Metal-шейдеры, PBR ClearCoat лакировка, HDR-адаптация, TAA, Depth of Field боке
-            - Живые космические события: периодические взрывы и столкновения метеоритов с ударными волнами
-            - Реалистичная чёрная дыра с фотонным кольцом, гравитационным линзированием и спагеттификацией фигуры
-            - Два режима управления фигурами: Нажатие и Руками (3D-физика с перетаскиванием и опрокидыванием фигур)
-            - Управление камерой гироскопом в настройках
-            - 5-слойные объёмные туманности и вся Солнечная система 1 в 1"
+            --title "VibeChess $VERSION (4K PBR + Fixed Sun Shader)" \
+            --notes "Версия 7.0:
+            - Исправлен Metal-шейдер Солнца (scn_frame.time) и баланс HDR-экспозиции
+            - 4K текстуры орехового дерева, итальянского мрамора, белых и чёрных фигур, космоса и Земли
+            - Двойные мягкие тени, 20 объёмных лучей света, RTX-отблески на доске и золоте
+            - Усиленные взрывы и столкновения метеоритов с двойной ударной волной
+            - Режим 3D-физики рук (перенос/сбивание фигур) и гироскоп в настройках"
