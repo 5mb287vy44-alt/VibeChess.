@@ -50,6 +50,13 @@ enum BotDifficulty: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
+enum GraphicsQuality: String, CaseIterable, Identifiable, Codable {
+    case standard = "Стандарт"
+    case high = "Высокое"
+    case ultra = "Ультра"
+    var id: String { rawValue }
+}
+
 enum GameResult: Equatable {
     case checkmate(winner: Side)
     case stalemate
@@ -677,23 +684,6 @@ final class SoundEngine: NSObject {
     }
 }
 
-// MARK: - Текстуры (генерируются при сборке, см. build.yml)
-
-struct TextureCache {
-    static let wood = loadTex("wood_texture")
-    static let marble = loadTex("marble_texture")
-    static let earth = loadTex("earth_texture")
-    static let mars = loadTex("mars_texture")
-    static let saturn = loadTex("saturn_texture")
-    static let sun = loadTex("sun_texture")
-    static let moon = loadTex("moon_texture")
-
-    private static func loadTex(_ name: String) -> UIImage? {
-        if let path = Bundle.main.path(forResource: name, ofType: "png") { return UIImage(contentsOfFile: path) }
-        return UIImage(named: name)
-    }
-}
-
 // MARK: - Модели интерфейса
 
 struct ChatMessage: Identifiable {
@@ -762,6 +752,12 @@ final class GameManager: ObservableObject {
     @Published var musicEnabled = true { didSet { saveSettings(); SoundEngine.shared.toggleMusic(musicEnabled) } }
     @Published var voiceEnabled = true { didSet { saveSettings() } }
     @Published var showHints = true { didSet { saveSettings(); refreshHighlights() } }
+    @Published var graphicsQuality: GraphicsQuality = .ultra {
+        didSet {
+            saveSettings()
+            space.applyQuality(graphicsQuality)
+        }
+    }
 
     // Сцена
     let boardCtl = BoardController()
@@ -787,6 +783,7 @@ final class GameManager: ObservableObject {
         loadSavesFromDisk()
         positionCounts = [board.key: 1]
         boardCtl.reset(board: board, flipped: false)
+        space.applyQuality(graphicsQuality)
         SoundEngine.shared.toggleMusic(musicEnabled)
     }
 
@@ -807,6 +804,7 @@ final class GameManager: ObservableObject {
         d.set(musicEnabled, forKey: "Vibe_Music")
         d.set(voiceEnabled, forKey: "Vibe_Voice")
         d.set(showHints, forKey: "Vibe_Hints")
+        d.set(graphicsQuality.rawValue, forKey: "Vibe_Quality")
         d.set(mode.rawValue, forKey: "Vibe_Mode")
         d.set(difficulty.rawValue, forKey: "Vibe_Diff")
         d.set(timeControl.rawValue, forKey: "Vibe_Time")
@@ -819,6 +817,7 @@ final class GameManager: ObservableObject {
         if d.object(forKey: "Vibe_Music") != nil { musicEnabled = d.bool(forKey: "Vibe_Music") }
         if d.object(forKey: "Vibe_Voice") != nil { voiceEnabled = d.bool(forKey: "Vibe_Voice") }
         if d.object(forKey: "Vibe_Hints") != nil { showHints = d.bool(forKey: "Vibe_Hints") }
+        if let m = d.string(forKey: "Vibe_Quality"), let v = GraphicsQuality(rawValue: m) { graphicsQuality = v }
         if let m = d.string(forKey: "Vibe_Mode"), let v = GameMode(rawValue: m) { mode = v }
         if let m = d.string(forKey: "Vibe_Diff"), let v = BotDifficulty(rawValue: m) { difficulty = v }
         if let m = d.string(forKey: "Vibe_Time"), let v = TimeControl(rawValue: m) { timeControl = v }
@@ -1037,6 +1036,7 @@ final class GameManager: ObservableObject {
         SoundEngine.shared.play("win", enabled: sfxEnabled)
         SoundEngine.shared.speak(result.title, enabled: voiceEnabled)
         haptic(.heavy)
+        if case .checkmate = result { boardCtl.celebrate() }
         saveSlots.removeAll { $0.id == "auto" }
         persistSlots()
     }
@@ -1294,21 +1294,69 @@ final class GameManager: ObservableObject {
     }
 }
 
+// MARK: - Текстуры (генерируются при сборке, см. build.yml)
+
+struct TextureCache {
+    static let wood = load("wood_texture")
+    static let woodNormal = load("wood_normal")
+    static let woodRough = load("wood_rough")
+    static let marble = load("marble_texture")
+    static let marbleNormal = load("marble_normal")
+    static let marbleRough = load("marble_rough")
+    static let pieceWhite = load("piece_white")
+    static let pieceBlack = load("piece_black")
+    static let earth = load("earth_texture")
+    static let earthClouds = load("earth_clouds")
+    static let mars = load("mars_texture")
+    static let marsNormal = load("mars_normal")
+    static let moon = load("moon_texture")
+    static let moonNormal = load("moon_normal")
+    static let saturn = load("saturn_texture")
+    static let saturnRing = load("saturn_ring")
+    static let sun = load("sun_texture")
+    static let sky = load("sky_nebula")
+    static let env = load("env_studio")
+    static let glow = load("fx_glow")
+    static let glowWarm = load("fx_glow_warm")
+    static let dust = load("fx_dust")
+    static let spark = load("fx_spark")
+    static let streak = load("fx_streak")
+    static let burst = load("fx_burst")
+    static let beam = load("fx_beam")
+    static let halo = load("fx_halo")
+    static let haloWarm = load("fx_halo_warm")
+    static let hlCyan = load("hl_tile_cyan")
+    static let hlYellow = load("hl_tile_yellow")
+    static let hlRed = load("hl_tile_red")
+    static let hlHint = load("hl_tile_hint")
+    static let hlDot = load("hl_dot_green")
+    static let hlRing = load("hl_ring_red")
+
+    private static func load(_ name: String) -> UIImage? {
+        if let path = Bundle.main.path(forResource: name, ofType: "png") { return UIImage(contentsOfFile: path) }
+        return UIImage(named: name)
+    }
+}
+
 // MARK: - Фигуры (точёные профили Штаунтона)
 
 enum Lathe {
-    // Тело вращения по профилю (радиус, высота) снизу вверх
-    static func geometry(_ profile: [(Float, Float)], segments: Int = 36) -> SCNGeometry {
+    // Тело вращения по профилю (радиус, высота) снизу вверх, с текстурными координатами
+    static func geometry(_ profile: [(Float, Float)], segments: Int = 64) -> SCNGeometry {
         let n = profile.count
         var segN: [(Float, Float)] = []
+        var cum = [Float](repeating: 0, count: n)
         for i in 0..<(n - 1) {
             let dr = profile[i + 1].0 - profile[i].0
             let dy = profile[i + 1].1 - profile[i].1
             let len = max(0.0001, (dr * dr + dy * dy).squareRoot())
             segN.append((dy / len, -dr / len))
+            cum[i + 1] = cum[i] + len
         }
+        let total = max(0.0001, cum[n - 1])
         var vertices: [SCNVector3] = []
         var normals: [SCNVector3] = []
+        var uvs: [CGPoint] = []
         for i in 0..<n {
             var nn = segN[min(i, n - 2)]
             if i > 0 && i < n - 1 {
@@ -1321,12 +1369,14 @@ enum Lathe {
             }
             let r = profile[i].0
             let y = profile[i].1
+            let v = CGFloat(cum[i] / total)
             for j in 0...segments {
                 let a = Float(j) / Float(segments) * 2 * Float.pi
                 let c = cos(a)
                 let s = sin(a)
                 vertices.append(SCNVector3(r * c, y, r * s))
                 normals.append(SCNVector3(nn.0 * c, nn.1, nn.0 * s))
+                uvs.append(CGPoint(x: CGFloat(j) / CGFloat(segments), y: v))
             }
         }
         var indices: [Int32] = []
@@ -1342,8 +1392,9 @@ enum Lathe {
         }
         let vs = SCNGeometrySource(vertices: vertices)
         let ns = SCNGeometrySource(normals: normals)
+        let ts = SCNGeometrySource(textureCoordinates: uvs)
         let el = SCNGeometryElement(indices: indices, primitiveType: .triangles)
-        return SCNGeometry(sources: [vs, ns], elements: [el])
+        return SCNGeometry(sources: [vs, ns, ts], elements: [el])
     }
 }
 
@@ -1358,18 +1409,30 @@ enum PieceBuilder {
         return t.clone()
     }
 
-    private static func material(white: Bool) -> SCNMaterial {
+    // Золото для инкрустации (общее для фигур и доски)
+    static let gold: SCNMaterial = {
         let m = SCNMaterial()
         m.lightingModel = .physicallyBased
-        if white {
-            m.diffuse.contents = UIColor(red: 0.95, green: 0.91, blue: 0.82, alpha: 1)
-            m.roughness.contents = 0.32
-            m.metalness.contents = 0.0
+        m.diffuse.contents = UIColor(red: 1.0, green: 0.78, blue: 0.34, alpha: 1)
+        m.metalness.contents = 1.0
+        m.roughness.contents = 0.26
+        return m
+    }()
+
+    private static func bodyMaterial(white: Bool) -> SCNMaterial {
+        let m = SCNMaterial()
+        m.lightingModel = .physicallyBased
+        let tex = white ? TextureCache.pieceWhite : TextureCache.pieceBlack
+        if let img = tex {
+            m.diffuse.contents = img
+            m.diffuse.wrapS = .repeat
+            m.diffuse.wrapT = .repeat
+            m.diffuse.contentsTransform = SCNMatrix4MakeScale(2, 1.5, 1)
         } else {
-            m.diffuse.contents = UIColor(red: 0.13, green: 0.10, blue: 0.09, alpha: 1)
-            m.roughness.contents = 0.28
-            m.metalness.contents = 0.15
+            m.diffuse.contents = white ? UIColor(red: 0.95, green: 0.91, blue: 0.82, alpha: 1) : UIColor(red: 0.12, green: 0.10, blue: 0.09, alpha: 1)
         }
+        m.roughness.contents = white ? 0.24 : 0.15
+        m.metalness.contents = white ? 0.0 : 0.2
         return m
     }
 
@@ -1379,94 +1442,203 @@ enum PieceBuilder {
         return SCNNode(geometry: g)
     }
 
-    private static func sphere(_ r: CGFloat, _ mat: SCNMaterial, _ x: Float, _ y: Float, _ z: Float) -> SCNNode {
+    private static func ring(_ radius: CGFloat, _ pipe: CGFloat, _ y: Float) -> SCNNode {
+        let t = SCNTorus(ringRadius: radius, pipeRadius: pipe)
+        t.ringSegmentCount = 48
+        t.pipeSegmentCount = 10
+        t.materials = [gold]
+        let n = SCNNode(geometry: t)
+        n.position = SCNVector3(0, y, 0)
+        return n
+    }
+
+    private static func ball(_ r: CGFloat, _ x: Float, _ y: Float, _ z: Float, _ mat: SCNMaterial) -> SCNNode {
         let s = SCNSphere(radius: r)
-        s.segmentCount = 20
+        s.segmentCount = 24
         s.materials = [mat]
         let n = SCNNode(geometry: s)
         n.position = SCNVector3(x, y, z)
         return n
     }
 
+    // Профили фигур (радиус, высота) снизу вверх, включая общий плинт
+    private static let pawnProfile: [(Float, Float)] = [
+        (0, 0), (0.38, 0), (0.38, 0.04), (0.36, 0.06),
+        (0.36, 0.075), (0.32, 0.095), (0.31, 0.12), (0.26, 0.14),
+        (0.22, 0.17), (0.155, 0.26), (0.125, 0.38), (0.12, 0.46),
+        (0.2, 0.485), (0.215, 0.505), (0.2, 0.525), (0.125, 0.55),
+        (0.11, 0.58), (0.15, 0.62), (0.18, 0.68), (0.19, 0.74),
+        (0.17, 0.8), (0.12, 0.85), (0.06, 0.875), (0, 0.885)
+    ]
+    private static let rookProfile: [(Float, Float)] = [
+        (0, 0), (0.38, 0), (0.38, 0.04), (0.36, 0.06),
+        (0.36, 0.075), (0.32, 0.095), (0.31, 0.12), (0.26, 0.14),
+        (0.235, 0.16), (0.21, 0.24), (0.195, 0.4), (0.19, 0.58),
+        (0.205, 0.6), (0.27, 0.64), (0.29, 0.665), (0.29, 0.69),
+        (0.265, 0.71), (0.265, 0.92), (0.3, 0.93), (0.3, 1),
+        (0.235, 1), (0.235, 0.94), (0, 0.94)
+    ]
+    private static let bishopProfile: [(Float, Float)] = [
+        (0, 0), (0.38, 0), (0.38, 0.04), (0.36, 0.06),
+        (0.36, 0.075), (0.32, 0.095), (0.31, 0.12), (0.26, 0.14),
+        (0.22, 0.17), (0.165, 0.3), (0.125, 0.45), (0.12, 0.58),
+        (0.2, 0.605), (0.215, 0.625), (0.2, 0.645), (0.125, 0.67),
+        (0.13, 0.7), (0.19, 0.76), (0.22, 0.86), (0.21, 0.96),
+        (0.17, 1.06), (0.11, 1.15), (0.07, 1.2), (0.09, 1.225),
+        (0.09, 1.255), (0.065, 1.285), (0.03, 1.31), (0, 1.315)
+    ]
+    private static let queenProfile: [(Float, Float)] = [
+        (0, 0), (0.38, 0), (0.38, 0.04), (0.36, 0.06),
+        (0.36, 0.075), (0.32, 0.095), (0.31, 0.12), (0.26, 0.14),
+        (0.23, 0.18), (0.17, 0.32), (0.135, 0.5), (0.125, 0.68),
+        (0.21, 0.7), (0.225, 0.73), (0.205, 0.76), (0.135, 0.79),
+        (0.17, 0.86), (0.22, 0.96), (0.265, 1.06), (0.29, 1.15),
+        (0.3, 1.2), (0.26, 1.22), (0.2, 1.2), (0.12, 1.17),
+        (0, 1.17)
+    ]
+    private static let kingProfile: [(Float, Float)] = [
+        (0, 0), (0.38, 0), (0.38, 0.04), (0.36, 0.06),
+        (0.36, 0.075), (0.32, 0.095), (0.31, 0.12), (0.26, 0.14),
+        (0.23, 0.18), (0.175, 0.32), (0.14, 0.52), (0.13, 0.72),
+        (0.22, 0.745), (0.235, 0.775), (0.215, 0.805), (0.14, 0.835),
+        (0.185, 0.92), (0.235, 1.03), (0.265, 1.13), (0.275, 1.21),
+        (0.235, 1.235), (0.15, 1.22), (0.07, 1.2), (0, 1.2)
+    ]
+    private static let knightProfile: [(Float, Float)] = [
+        (0, 0), (0.38, 0), (0.38, 0.04), (0.36, 0.06),
+        (0.36, 0.075), (0.32, 0.095), (0.31, 0.12), (0.26, 0.14),
+        (0.235, 0.17), (0.205, 0.24), (0.19, 0.32), (0, 0.34)
+    ]
+
+    // Силуэт головы коня (сглаженный контур, вид сбоку: x вперёд, y вверх)
+    private static let knightHeadPts: [(CGFloat, CGFloat)] = [
+        (-0.0438, 0), (0.0237, 0), (0.0827, 0.0028), (0.133, 0.0084),
+        (0.1747, 0.0169), (0.2078, 0.0281), (0.2323, 0.0422), (0.2483, 0.0591),
+        (0.2556, 0.0788), (0.2544, 0.1013), (0.252, 0.1244), (0.2486, 0.1481),
+        (0.2441, 0.1725), (0.2384, 0.1975), (0.2317, 0.2231), (0.2239, 0.2494),
+        (0.215, 0.2763), (0.205, 0.3038), (0.1983, 0.3294), (0.1948, 0.3531),
+        (0.1947, 0.375), (0.1978, 0.395), (0.2042, 0.4131), (0.2139, 0.4294),
+        (0.2269, 0.4437), (0.2431, 0.4562), (0.2605, 0.467), (0.2789, 0.4761),
+        (0.2984, 0.4834), (0.3191, 0.4891), (0.3408, 0.493), (0.3636, 0.4952),
+        (0.3875, 0.4956), (0.4125, 0.4944), (0.4355, 0.495), (0.4564, 0.4975),
+        (0.4753, 0.5019), (0.4922, 0.5081), (0.507, 0.5162), (0.5198, 0.5262),
+        (0.5306, 0.5381), (0.5394, 0.5519), (0.5458, 0.5656), (0.5498, 0.5794),
+        (0.5516, 0.5931), (0.5509, 0.6069), (0.548, 0.6206), (0.5427, 0.6344),
+        (0.535, 0.6481), (0.525, 0.6619), (0.5134, 0.6762), (0.5003, 0.6912),
+        (0.4856, 0.7069), (0.4694, 0.7231), (0.4516, 0.74), (0.4322, 0.7575),
+        (0.4113, 0.7756), (0.3888, 0.7944), (0.3675, 0.8125), (0.3475, 0.83),
+        (0.3287, 0.8469), (0.3112, 0.8631), (0.295, 0.8787), (0.28, 0.8937),
+        (0.2662, 0.9081), (0.2537, 0.9219), (0.2423, 0.9367), (0.232, 0.9527),
+        (0.2228, 0.9697), (0.2147, 0.9878), (0.2077, 1.007), (0.2017, 1.0273),
+        (0.1969, 1.0488), (0.1931, 1.0713), (0.1884, 1.0888), (0.1828, 1.1012),
+        (0.1763, 1.1087), (0.1688, 1.1112), (0.1603, 1.1087), (0.1509, 1.1012),
+        (0.1406, 1.0887), (0.1294, 1.0713), (0.1178, 1.0578), (0.1059, 1.0484),
+        (0.0938, 1.0431), (0.0812, 1.0419), (0.0684, 1.0447), (0.0553, 1.0516),
+        (0.0419, 1.0625), (0.0281, 1.0775), (0.0142, 1.0881), (0.0002, 1.0944),
+        (-0.0141, 1.0962), (-0.0284, 1.0937), (-0.043, 1.0869), (-0.0577, 1.0756),
+        (-0.0725, 1.06), (-0.0875, 1.04), (-0.1023, 1.0183), (-0.117, 0.9948),
+        (-0.1316, 0.9697), (-0.1459, 0.9428), (-0.1602, 0.9142), (-0.1742, 0.8839),
+        (-0.1881, 0.8519), (-0.2019, 0.8181), (-0.2152, 0.7833), (-0.228, 0.7473),
+        (-0.2403, 0.7103), (-0.2522, 0.6722), (-0.2636, 0.633), (-0.2745, 0.5927),
+        (-0.285, 0.5512), (-0.295, 0.5087), (-0.303, 0.4659), (-0.3089, 0.4228),
+        (-0.3128, 0.3794), (-0.3147, 0.3356), (-0.3145, 0.2916), (-0.3123, 0.2472),
+        (-0.3081, 0.2025), (-0.3019, 0.1575), (-0.288, 0.1181), (-0.2664, 0.0844),
+        (-0.2372, 0.0563), (-0.2003, 0.0338), (-0.1558, 0.0169), (-0.1036, 0.0056)
+    ]
+
+    private static func knightHead(_ mat: SCNMaterial, white: Bool) -> SCNNode {
+        let s: CGFloat = 0.72
+        let p = UIBezierPath()
+        for (i, pt) in knightHeadPts.enumerated() {
+            let q = CGPoint(x: pt.0 * s, y: 0.34 + pt.1 * s)
+            if i == 0 { p.move(to: q) } else { p.addLine(to: q) }
+        }
+        p.close()
+        let shape = SCNShape(path: p, extrusionDepth: 0.30)
+        shape.chamferRadius = 0.04
+        shape.flatness = 0.05
+        shape.materials = [mat]
+        let node = SCNNode(geometry: shape)
+        let bb = node.boundingBox
+        node.pivot = SCNMatrix4MakeTranslation(0, 0, (bb.min.z + bb.max.z) / 2)
+
+        let holder = SCNNode()
+        holder.addChildNode(node)
+        let eyeMat = white ? bodyMaterial(white: false) : gold
+        let ex = Float(0.33 * s)
+        let ey = Float(0.34 + 0.68 * s)
+        for z in [Float(-0.15), Float(0.15)] {
+            holder.addChildNode(ball(0.032, ex, ey, z, eyeMat))
+        }
+        return holder
+    }
+
     private static func build(_ code: Int8) -> SCNNode {
         let type = abs(Int(code))
         let white = code > 0
-        let mat = material(white: white)
+        let mat = bodyMaterial(white: white)
         let root = SCNNode()
-        let base: [(Float, Float)] = [(0, 0), (0.35, 0), (0.35, 0.06), (0.31, 0.10), (0.26, 0.13)]
 
         switch type {
         case 1:
-            let body: [(Float, Float)] = [(0.20, 0.17), (0.13, 0.30), (0.11, 0.42), (0.19, 0.46), (0.19, 0.50),
-                                              (0.11, 0.53), (0.15, 0.58), (0.17, 0.66), (0.15, 0.74), (0.08, 0.80), (0, 0.82)]
-            root.addChildNode(lathe(base + body, mat))
+            root.addChildNode(lathe(pawnProfile, mat))
+            root.addChildNode(ring(0.214, 0.011, 0.505))
         case 2:
-            let body: [(Float, Float)] = [(0.21, 0.18), (0.17, 0.32), (0.16, 0.44), (0.18, 0.50), (0.0, 0.50)]
-            root.addChildNode(lathe(base + body, mat))
-            let neck = SCNBox(width: 0.26, height: 0.58, length: 0.30, chamferRadius: 0.06)
-            neck.materials = [mat]
-            let nn = SCNNode(geometry: neck)
-            nn.position = SCNVector3(0, 0.74, 0.02)
-            nn.eulerAngles.x = -0.22
-            root.addChildNode(nn)
-            let head = SCNBox(width: 0.22, height: 0.22, length: 0.48, chamferRadius: 0.07)
-            head.materials = [mat]
-            let hn = SCNNode(geometry: head)
-            hn.position = SCNVector3(0, 1.0, -0.14)
-            hn.eulerAngles.x = -0.25
-            root.addChildNode(hn)
-            for sx in [Float(-0.06), Float(0.06)] {
-                let ear = SCNPyramid(width: 0.07, height: 0.15, length: 0.07)
-                ear.materials = [mat]
-                let en = SCNNode(geometry: ear)
-                en.position = SCNVector3(sx, 1.08, 0.08)
-                root.addChildNode(en)
-            }
-            if !white { root.eulerAngles.y = Float.pi }
+            root.addChildNode(lathe(knightProfile, mat))
+            let head = knightHead(mat, white: white)
+            head.eulerAngles.y = white ? Float.pi / 2 : -Float.pi / 2
+            root.addChildNode(head)
+            root.addChildNode(ring(0.192, 0.011, 0.32))
         case 3:
-            let body: [(Float, Float)] = [(0.17, 0.20), (0.12, 0.38), (0.10, 0.52), (0.20, 0.56), (0.20, 0.60),
-                                              (0.10, 0.63), (0.18, 0.70), (0.20, 0.80), (0.17, 0.92), (0.10, 1.02), (0.04, 1.08),
-                                              (0.07, 1.11), (0.07, 1.15), (0.04, 1.18), (0, 1.19)]
-            root.addChildNode(lathe(base + body, mat))
+            root.addChildNode(lathe(bishopProfile, mat))
+            root.addChildNode(ring(0.215, 0.011, 0.625))
+            root.addChildNode(ring(0.128, 0.009, 0.69))
+            root.addChildNode(ball(0.04, 0, 1.335, 0, gold))
         case 4:
-            let body: [(Float, Float)] = [(0.22, 0.20), (0.19, 0.40), (0.18, 0.60), (0.26, 0.64), (0.28, 0.68),
-                                              (0.28, 0.86), (0.22, 0.86), (0.22, 0.80), (0, 0.80)]
-            root.addChildNode(lathe(base + body, mat))
+            root.addChildNode(lathe(rookProfile, mat))
+            root.addChildNode(ring(0.29, 0.012, 0.677))
             for k in 0..<8 {
                 let a = Float(k) * Float.pi / 4
-                let b = SCNBox(width: 0.11, height: 0.10, length: 0.11, chamferRadius: 0.01)
+                let b = SCNBox(width: 0.06, height: 0.09, length: 0.10, chamferRadius: 0.008)
                 b.materials = [mat]
                 let bn = SCNNode(geometry: b)
-                bn.position = SCNVector3(0.245 * cos(a), 0.91, 0.245 * sin(a))
+                bn.position = SCNVector3(0.2675 * cos(a), 1.045, 0.2675 * sin(a))
                 bn.eulerAngles.y = -a
                 root.addChildNode(bn)
             }
         case 5:
-            let body: [(Float, Float)] = [(0.19, 0.22), (0.14, 0.45), (0.12, 0.70), (0.22, 0.74), (0.22, 0.78),
-                                              (0.12, 0.81), (0.17, 0.90), (0.24, 1.02), (0.27, 1.12), (0.20, 1.14),
-                                              (0.12, 1.10), (0, 1.10)]
-            root.addChildNode(lathe(base + body, mat))
-            root.addChildNode(sphere(0.07, mat, 0, 1.20, 0))
-            for k in 0..<8 {
-                let a = Float(k) * Float.pi / 4
-                root.addChildNode(sphere(0.04, mat, 0.23 * cos(a), 1.16, 0.23 * sin(a)))
+            root.addChildNode(lathe(queenProfile, mat))
+            root.addChildNode(ring(0.225, 0.012, 0.73))
+            root.addChildNode(ring(0.292, 0.011, 1.19))
+            root.addChildNode(ball(0.06, 0, 1.225, 0, gold))
+            for k in 0..<9 {
+                let a = Float(k) * 2 * Float.pi / 9
+                let c = SCNCone(topRadius: 0, bottomRadius: 0.034, height: 0.16)
+                c.materials = [mat]
+                let cn = SCNNode(geometry: c)
+                cn.position = SCNVector3(0.27 * cos(a), 1.29, 0.27 * sin(a))
+                root.addChildNode(cn)
+                root.addChildNode(ball(0.026, 0.27 * cos(a), 1.38, 0.27 * sin(a), gold))
             }
         default:
-            let body: [(Float, Float)] = [(0.19, 0.22), (0.15, 0.45), (0.13, 0.72), (0.24, 0.76), (0.24, 0.80),
-                                              (0.13, 0.83), (0.20, 0.92), (0.25, 1.05), (0.26, 1.14), (0.14, 1.16), (0, 1.16)]
-            root.addChildNode(lathe(base + body, mat))
-            let v = SCNBox(width: 0.09, height: 0.32, length: 0.09, chamferRadius: 0.015)
-            v.materials = [mat]
+            root.addChildNode(lathe(kingProfile, mat))
+            root.addChildNode(ring(0.235, 0.012, 0.775))
+            root.addChildNode(ring(0.27, 0.011, 1.205))
+            root.addChildNode(ball(0.055, 0, 1.235, 0, gold))
+            let v = SCNBox(width: 0.075, height: 0.26, length: 0.075, chamferRadius: 0.015)
+            v.materials = [gold]
             let vn = SCNNode(geometry: v)
-            vn.position = SCNVector3(0, 1.32, 0)
+            vn.position = SCNVector3(0, 1.40, 0)
             root.addChildNode(vn)
-            let h = SCNBox(width: 0.25, height: 0.08, length: 0.09, chamferRadius: 0.015)
-            h.materials = [mat]
+            let h = SCNBox(width: 0.21, height: 0.06, length: 0.075, chamferRadius: 0.015)
+            h.materials = [gold]
             let hn = SCNNode(geometry: h)
-            hn.position = SCNVector3(0, 1.36, 0)
+            hn.position = SCNVector3(0, 1.46, 0)
             root.addChildNode(hn)
         }
-        return root
+        // Золотое кольцо по плинту каждой фигуры
+        root.addChildNode(ring(0.362, 0.013, 0.068))
+        return root.flattenedClone()
     }
 }
 
@@ -1509,6 +1681,16 @@ final class BoardController {
         return nil
     }
 
+    // MARK: Материалы
+
+    private func applyMap(_ prop: SCNMaterialProperty, _ image: UIImage?, _ transform: SCNMatrix4) {
+        guard let img = image else { return }
+        prop.contents = img
+        prop.wrapS = .repeat
+        prop.wrapT = .repeat
+        prop.contentsTransform = transform
+    }
+
     // MARK: Построение
 
     private func buildSquares() {
@@ -1516,41 +1698,51 @@ final class BoardController {
             let c = s & 7
             let r = s >> 3
             let dark = (r + c) % 2 == 0
-            let box = SCNBox(width: 1.0, height: 0.15, length: 1.0, chamferRadius: 0)
+            let box = SCNBox(width: 1.0, height: 0.15, length: 1.0, chamferRadius: 0.012)
             let mat = SCNMaterial()
             mat.lightingModel = .physicallyBased
-            if dark {
-                if let img = TextureCache.wood { mat.diffuse.contents = img } else { mat.diffuse.contents = UIColor(red: 0.40, green: 0.25, blue: 0.14, alpha: 1) }
-                mat.roughness.contents = 0.45
-            } else {
-                if let img = TextureCache.marble { mat.diffuse.contents = img } else { mat.diffuse.contents = UIColor(red: 0.90, green: 0.87, blue: 0.80, alpha: 1) }
-                mat.roughness.contents = 0.25
-            }
-            mat.metalness.contents = 0.0
-            mat.diffuse.wrapS = .repeat
-            mat.diffuse.wrapT = .repeat
             let ox = Float((s * 53) % 16) / 16.0
             let oy = Float((s * 29 + 7) % 16) / 16.0
-            mat.diffuse.contentsTransform = SCNMatrix4Mult(SCNMatrix4MakeScale(0.5, 0.5, 1), SCNMatrix4MakeTranslation(ox, oy, 0))
+            let tf = SCNMatrix4Mult(SCNMatrix4MakeScale(0.5, 0.5, 1), SCNMatrix4MakeTranslation(ox, oy, 0))
+            if dark {
+                if TextureCache.wood != nil {
+                    applyMap(mat.diffuse, TextureCache.wood, tf)
+                    applyMap(mat.normal, TextureCache.woodNormal, tf)
+                    applyMap(mat.roughness, TextureCache.woodRough, tf)
+                } else {
+                    mat.diffuse.contents = UIColor(red: 0.40, green: 0.25, blue: 0.14, alpha: 1)
+                    mat.roughness.contents = 0.45
+                }
+            } else {
+                if TextureCache.marble != nil {
+                    applyMap(mat.diffuse, TextureCache.marble, tf)
+                    applyMap(mat.normal, TextureCache.marbleNormal, tf)
+                    applyMap(mat.roughness, TextureCache.marbleRough, tf)
+                } else {
+                    mat.diffuse.contents = UIColor(red: 0.90, green: 0.87, blue: 0.80, alpha: 1)
+                    mat.roughness.contents = 0.25
+                }
+            }
+            mat.metalness.contents = 0.0
             box.materials = [mat]
             let node = SCNNode(geometry: box)
             node.name = "sq_\(s)"
             node.position = SCNVector3(Float(c) - 3.5, 0, 3.5 - Float(r))
             squaresNode.addChildNode(node)
 
-            let plane = SCNPlane(width: 0.94, height: 0.94)
+            let plane = SCNPlane(width: 0.96, height: 0.96)
             let om = SCNMaterial()
             om.lightingModel = .constant
             om.diffuse.contents = UIColor.green
-            om.transparency = 0.5
             om.isDoubleSided = true
             om.writesToDepthBuffer = false
             plane.materials = [om]
             let on = SCNNode(geometry: plane)
             on.name = "sq_\(s)"
             on.eulerAngles.x = -Float.pi / 2
-            on.position = SCNVector3(Float(c) - 3.5, 0.082, 3.5 - Float(r))
+            on.position = SCNVector3(Float(c) - 3.5, 0.083, 3.5 - Float(r))
             on.renderingOrder = 10
+            on.castsShadow = false
             on.isHidden = true
             squaresNode.addChildNode(on)
             overlays.append(on)
@@ -1561,28 +1753,46 @@ final class BoardController {
     private func buildFrame() {
         let fm = SCNMaterial()
         fm.lightingModel = .physicallyBased
-        if let img = TextureCache.wood {
-            fm.diffuse.contents = img
-            fm.multiply.contents = UIColor(red: 0.55, green: 0.40, blue: 0.32, alpha: 1)
+        let tf = SCNMatrix4MakeScale(2.5, 0.5, 1)
+        if TextureCache.wood != nil {
+            applyMap(fm.diffuse, TextureCache.wood, tf)
+            applyMap(fm.normal, TextureCache.woodNormal, tf)
+            applyMap(fm.roughness, TextureCache.woodRough, tf)
+            fm.multiply.contents = UIColor(red: 0.62, green: 0.46, blue: 0.36, alpha: 1)
         } else {
             fm.diffuse.contents = UIColor(red: 0.22, green: 0.13, blue: 0.08, alpha: 1)
+            fm.roughness.contents = 0.4
         }
-        fm.roughness.contents = 0.4
+        fm.metalness.contents = 0.0
         let strips: [(CGFloat, CGFloat, Float, Float)] = [
             (9.9, 0.95, 0, 4.475), (9.9, 0.95, 0, -4.475), (0.95, 8.0, 4.475, 0), (0.95, 8.0, -4.475, 0)
         ]
         for (w, l, x, z) in strips {
-            let b = SCNBox(width: w, height: 0.3, length: l, chamferRadius: 0.03)
+            let b = SCNBox(width: w, height: 0.3, length: l, chamferRadius: 0.04)
             b.materials = [fm]
             let n = SCNNode(geometry: b)
             n.position = SCNVector3(x, restY - 0.15, z)
             root.addChildNode(n)
         }
-        let slab = SCNBox(width: 10.5, height: 0.25, length: 10.5, chamferRadius: 0.05)
+        let slab = SCNBox(width: 10.5, height: 0.25, length: 10.5, chamferRadius: 0.06)
         slab.materials = [fm]
         let sn = SCNNode(geometry: slab)
         sn.position = SCNVector3(0, -0.35, 0)
         root.addChildNode(sn)
+
+        // Золотая инкрустация по периметру игрового поля и по внешнему краю рамки
+        let inlay: [(CGFloat, CGFloat, Float, Float)] = [
+            (8.14, 0.05, 0, 4.045), (8.14, 0.05, 0, -4.045), (0.05, 8.14, 4.045, 0), (0.05, 8.14, -4.045, 0),
+            (9.78, 0.04, 0, 4.88), (9.78, 0.04, 0, -4.88), (0.04, 9.78, 4.88, 0), (0.04, 9.78, -4.88, 0)
+        ]
+        for (w, l, x, z) in inlay {
+            let b = SCNBox(width: w, height: 0.03, length: l, chamferRadius: 0.008)
+            b.materials = [PieceBuilder.gold]
+            let n = SCNNode(geometry: b)
+            n.position = SCNVector3(x, restY + 0.002, z)
+            n.castsShadow = false
+            root.addChildNode(n)
+        }
     }
 
     private func buildLabels() {
@@ -1599,7 +1809,7 @@ final class BoardController {
 
     private func addLabel(_ text: String, x: Float, z: Float) {
         let container = SCNNode()
-        container.position = SCNVector3(x, 0.09, z)
+        container.position = SCNVector3(x, 0.092, z)
         let plane = SCNPlane(width: 0.5, height: 0.5)
         let m = SCNMaterial()
         m.lightingModel = .constant
@@ -1608,6 +1818,7 @@ final class BoardController {
         plane.materials = [m]
         let pn = SCNNode(geometry: plane)
         pn.eulerAngles.x = -Float.pi / 2
+        pn.castsShadow = false
         container.addChildNode(pn)
         labelsNode.addChildNode(container)
         labelContainers.append(container)
@@ -1621,7 +1832,7 @@ final class BoardController {
             style.alignment = .center
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: 88, weight: .bold),
-                .foregroundColor: UIColor(red: 0.96, green: 0.86, blue: 0.62, alpha: 1.0),
+                .foregroundColor: UIColor(red: 1.0, green: 0.86, blue: 0.52, alpha: 1.0),
                 .paragraphStyle: style
             ]
             let str = NSAttributedString(string: text, attributes: attrs)
@@ -1658,23 +1869,34 @@ final class BoardController {
         }
     }
 
+    // MARK: Подсветка клеток
+
     func setHighlights(selected: Int?, targets: [Int: Bool], last: Move?, check: Int?) {
         for o in overlays { o.isHidden = true }
-        func show(_ s: Int, _ color: UIColor, _ alpha: CGFloat) {
+        func show(_ s: Int, _ img: UIImage?, _ fallback: UIColor) {
             if s < 0 || s >= 64 { return }
             overlays[s].isHidden = false
-            overlayMats[s].diffuse.contents = color
-            overlayMats[s].transparency = alpha
+            if let i = img {
+                overlayMats[s].diffuse.contents = i
+                overlayMats[s].transparency = 1.0
+            } else {
+                overlayMats[s].diffuse.contents = fallback
+                overlayMats[s].transparency = 0.5
+            }
         }
         if let l = last {
-            show(l.from, UIColor.yellow, 0.30)
-            show(l.to, UIColor.yellow, 0.40)
+            show(l.from, TextureCache.hlYellow, UIColor.yellow)
+            show(l.to, TextureCache.hlYellow, UIColor.yellow)
         }
-        if let s = selected { show(s, UIColor.cyan, 0.55) }
+        if let s = selected { show(s, TextureCache.hlCyan, UIColor.cyan) }
         for (s, isCapture) in targets {
-            show(s, isCapture ? UIColor.systemRed : UIColor.systemGreen, 0.65)
+            if isCapture {
+                show(s, TextureCache.hlRing, UIColor.systemRed)
+            } else {
+                show(s, TextureCache.hlDot, UIColor.systemGreen)
+            }
         }
-        if let c = check { show(c, UIColor.red, 0.75) }
+        if let c = check { show(c, TextureCache.hlRed, UIColor.red) }
     }
 
     func setLift(_ s: Int?) {
@@ -1689,6 +1911,52 @@ final class BoardController {
         }
         liftedSquare = s
     }
+
+    // MARK: Эффекты частиц
+
+    func burst(at square: Int, color: UIColor, intensity: CGFloat = 1.0, height: Float = 0.45) {
+        let ps = SCNParticleSystem()
+        ps.loops = false
+        ps.emissionDuration = 0.06
+        ps.birthRate = 4200 * intensity
+        ps.particleLifeSpan = 0.9
+        ps.particleLifeSpanVariation = 0.4
+        ps.particleVelocity = 3.0
+        ps.particleVelocityVariation = 1.8
+        ps.birthLocation = .volume
+        ps.birthDirection = .random
+        ps.emitterShape = SCNSphere(radius: 0.12)
+        ps.acceleration = SCNVector3(0, -4.5, 0)
+        ps.particleSize = 0.06
+        ps.particleSizeVariation = 0.03
+        ps.particleColor = color
+        ps.blendMode = .additive
+        ps.isLightingEnabled = false
+        if let img = TextureCache.spark { ps.particleImage = img }
+        let n = SCNNode()
+        let p = pos(square)
+        n.position = SCNVector3(p.x, p.y + height, p.z)
+        n.addParticleSystem(ps)
+        root.addChildNode(n)
+        n.runAction(SCNAction.sequence([SCNAction.wait(duration: 2.2), SCNAction.removeFromParentNode()]))
+    }
+
+    func celebrate() {
+        let colors: [UIColor] = [
+            UIColor(red: 1.0, green: 0.82, blue: 0.35, alpha: 1),
+            UIColor(red: 0.35, green: 0.85, blue: 1.0, alpha: 1),
+            UIColor(red: 1.0, green: 0.45, blue: 0.75, alpha: 1),
+            UIColor(red: 0.5, green: 1.0, blue: 0.6, alpha: 1)
+        ]
+        for i in 0..<8 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.32) { [weak self] in
+                guard let self = self else { return }
+                self.burst(at: Int.random(in: 0..<64), color: colors[i % colors.count], intensity: 1.4, height: 2.6)
+            }
+        }
+    }
+
+    // MARK: Анимация хода
 
     func animate(move m: Move, before: ChessBoard, after: ChessBoard, completion: @escaping () -> Void) {
         liftedSquare = nil
@@ -1727,6 +1995,13 @@ final class BoardController {
                 SCNAction.rotateBy(x: 3, y: 0, z: 2, duration: 0.6)
             ])
             cap.runAction(SCNAction.sequence([SCNAction.wait(duration: 0.25), fly, SCNAction.removeFromParentNode()]))
+            let capSquare = capSq
+            let capIsWhite = before.sq[capSq] > 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
+                guard let self = self, self.animationToken == token else { return }
+                let col = capIsWhite ? UIColor(red: 1.0, green: 0.92, blue: 0.7, alpha: 1) : UIColor(red: 1.0, green: 0.45, blue: 0.2, alpha: 1)
+                self.burst(at: capSquare, color: col)
+            }
         }
 
         // Рокировка: двигаем ладью
@@ -1763,28 +2038,40 @@ final class BoardController {
     }
 }
 
-// MARK: - Космос и камера
+// MARK: - Космос, свет и камера
 
 final class SpaceScene {
     let scene = SCNScene()
     let orbit = SCNNode()
     private let pitch = SCNNode()
     private let camNode = SCNNode()
+    private let rig = SCNNode()          // небо, солнце, планеты и свет: разворачивается вместе с видом игрока
+    private let beamsNode = SCNNode()
+    private let dustNode = SCNNode()
+    private let floorNode = SCNNode()
+    private var backLight: SCNLight? = nil
     private let baseCam = SCNVector3(0, 9.6, 9.0)
     private var zoom: Float = 1.0
 
     init() {
-        scene.background.contents = UIColor(red: 0.004, green: 0.006, blue: 0.02, alpha: 1)
-        scene.lightingEnvironment.contents = SpaceScene.environmentImage()
-        scene.lightingEnvironment.intensity = 1.1
-        buildSky()
+        buildBackground()
+        scene.rootNode.addChildNode(rig)
+        buildSun()
+        buildPlanets()
+        buildStars()
+        buildBeams(from: SCNVector3(3.3, -9, -37))
+        buildDust()
+        buildPedestal()
         buildCameraAndLights()
+        applyQuality(.ultra)
         startMenuOrbit()
     }
 
     var cameraNode: SCNNode { camNode }
 
-    static func environmentImage() -> UIImage {
+    // MARK: Фон и окружение
+
+    static func fallbackEnvironment() -> UIImage {
         let size = CGSize(width: 256, height: 128)
         let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { ctx in
@@ -1799,25 +2086,50 @@ final class SpaceScene {
         }
     }
 
+    private func buildBackground() {
+        if let sky = TextureCache.sky {
+            scene.background.contents = sky
+        } else {
+            scene.background.contents = UIColor(red: 0.004, green: 0.006, blue: 0.02, alpha: 1)
+        }
+        if let env = TextureCache.env {
+            scene.lightingEnvironment.contents = env
+        } else {
+            scene.lightingEnvironment.contents = SpaceScene.fallbackEnvironment()
+        }
+        scene.lightingEnvironment.intensity = 1.25
+    }
+
     private func ringPosition(_ angleDeg: Float, _ radius: Float, _ y: Float) -> SCNVector3 {
         let a = angleDeg * Float.pi / 180
         return SCNVector3(radius * sin(a), y, -radius * cos(a))
     }
 
-    private func planet(radius: CGFloat, image: UIImage?, fallback: UIColor) -> SCNNode {
-        let sphere = SCNSphere(radius: radius)
-        sphere.segmentCount = 48
+    // Спрайт, всегда повёрнутый к камере, со сложением цветов (свечение, блики)
+    private func sprite(_ image: UIImage?, _ w: CGFloat, _ h: CGFloat) -> SCNNode {
+        guard let img = image else { return SCNNode() }
+        let plane = SCNPlane(width: w, height: h)
         let m = SCNMaterial()
-        if let img = image { m.diffuse.contents = img } else { m.diffuse.contents = fallback }
-        m.specular.contents = UIColor(white: 0.15, alpha: 1)
-        sphere.materials = [m]
-        return SCNNode(geometry: sphere)
+        m.lightingModel = .constant
+        m.diffuse.contents = img
+        m.blendMode = .add
+        m.writesToDepthBuffer = false
+        m.isDoubleSided = true
+        plane.materials = [m]
+        let n = SCNNode(geometry: plane)
+        let bb = SCNBillboardConstraint()
+        bb.freeAxes = SCNBillboardAxis.all
+        n.constraints = [bb]
+        n.castsShadow = false
+        return n
     }
 
-    private func buildSky() {
-        // Солнце
-        let sun = SCNSphere(radius: 4.5)
-        sun.segmentCount = 48
+    // MARK: Солнце
+
+    private func buildSun() {
+        let pos = SCNVector3(3.3, -9, -37)
+        let sun = SCNSphere(radius: 3.6)
+        sun.segmentCount = 64
         let sm = SCNMaterial()
         sm.lightingModel = .constant
         if let img = TextureCache.sun {
@@ -1827,52 +2139,148 @@ final class SpaceScene {
             sm.diffuse.contents = UIColor(red: 1.0, green: 0.75, blue: 0.25, alpha: 1)
             sm.emission.contents = UIColor(red: 1.0, green: 0.65, blue: 0.15, alpha: 1)
         }
-        sm.emission.intensity = 2.0
+        sm.emission.intensity = 2.4
         sun.materials = [sm]
         let sunNode = SCNNode(geometry: sun)
-        sunNode.position = ringPosition(150, 34, 3)
-        sunNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.3, z: 0, duration: 30)))
-        scene.rootNode.addChildNode(sunNode)
+        sunNode.position = pos
+        sunNode.castsShadow = false
+        sunNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.25, z: 0, duration: 40)))
+        rig.addChildNode(sunNode)
 
-        // Земля и Луна
-        let earth = planet(radius: 2.6, image: TextureCache.earth, fallback: UIColor.systemBlue)
-        earth.position = ringPosition(-10, 27, -1)
-        let moon = planet(radius: 0.7, image: TextureCache.moon, fallback: UIColor.lightGray)
-        moon.position = SCNVector3(4.2, 0.8, 0)
-        earth.addChildNode(moon)
-        earth.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.6, z: 0, duration: 24)))
-        scene.rootNode.addChildNode(earth)
+        let corona = sprite(TextureCache.glowWarm, 36, 36)
+        corona.opacity = 0.95
+        corona.runAction(SCNAction.repeatForever(SCNAction.sequence([
+            SCNAction.scale(to: 1.06, duration: 3.2),
+            SCNAction.scale(to: 0.95, duration: 3.6)
+        ])))
+        let core = sprite(TextureCache.glow, 15, 15)
+        let flare = sprite(TextureCache.streak, 72, 9)
+        flare.opacity = 0.8
+        let star = sprite(TextureCache.burst, 34, 34)
+        star.opacity = 0.7
+        for n in [corona, core, flare, star] { sunNode.addChildNode(n) }
+    }
+
+    // MARK: Планеты
+
+    private func planetNode(radius: CGFloat, image: UIImage?, normal: UIImage?, fallback: UIColor) -> SCNNode {
+        let sphere = SCNSphere(radius: radius)
+        sphere.segmentCount = 64
+        let m = SCNMaterial()
+        m.lightingModel = .physicallyBased
+        if let img = image { m.diffuse.contents = img } else { m.diffuse.contents = fallback }
+        if let nm = normal {
+            m.normal.contents = nm
+            m.normal.intensity = 1.0
+        }
+        m.roughness.contents = 0.85
+        m.metalness.contents = 0.0
+        sphere.materials = [m]
+        let n = SCNNode(geometry: sphere)
+        n.castsShadow = false
+        return n
+    }
+
+    private func buildPlanets() {
+        // Земля с облаками, ореолом атмосферы и Луной
+        let earthHolder = SCNNode()
+        earthHolder.position = ringPosition(-10, 34, -9)
+        let earth = planetNode(radius: 2.8, image: TextureCache.earth, normal: nil, fallback: UIColor.systemBlue)
+        earth.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.5, z: 0, duration: 30)))
+        earthHolder.addChildNode(earth)
+        if let clouds = TextureCache.earthClouds {
+            let cs = SCNSphere(radius: 2.84)
+            cs.segmentCount = 64
+            let cm = SCNMaterial()
+            cm.lightingModel = .lambert
+            cm.diffuse.contents = clouds
+            cm.writesToDepthBuffer = false
+            cs.materials = [cm]
+            let cn = SCNNode(geometry: cs)
+            cn.castsShadow = false
+            cn.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.65, z: 0, duration: 30)))
+            earthHolder.addChildNode(cn)
+        }
+        let halo = sprite(TextureCache.halo, 7.6, 7.6)
+        halo.opacity = 0.9
+        earthHolder.addChildNode(halo)
+        // Шейдер атмосферы: свечение по краю диска (эффект Френеля)
+        let atmoSphere = SCNSphere(radius: 2.98)
+        atmoSphere.segmentCount = 48
+        let atmoMat = SCNMaterial()
+        atmoMat.lightingModel = .constant
+        atmoMat.diffuse.contents = UIColor.black
+        atmoMat.blendMode = .add
+        atmoMat.writesToDepthBuffer = false
+        atmoMat.shaderModifiers = [
+            SCNShaderModifierEntryPoint.fragment:
+                "#pragma body\nfloat3 n = normalize(_surface.normal);\nfloat3 v = normalize(_surface.view);\nfloat f = pow(1.0 - saturate(abs(dot(n, v))), 2.6);\n_output.color.rgb = float3(0.35, 0.62, 1.0) * f * 1.5;\n"
+        ]
+        atmoSphere.materials = [atmoMat]
+        let atmoNode = SCNNode(geometry: atmoSphere)
+        atmoNode.castsShadow = false
+        earthHolder.addChildNode(atmoNode)
+        let moonOrbit = SCNNode()
+        let moon = planetNode(radius: 0.75, image: TextureCache.moon, normal: TextureCache.moonNormal, fallback: UIColor.lightGray)
+        moon.position = SCNVector3(6.2, 0.9, 0)
+        moonOrbit.addChildNode(moon)
+        moonOrbit.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.8, z: 0, duration: 36)))
+        earthHolder.addChildNode(moonOrbit)
+        rig.addChildNode(earthHolder)
 
         // Марс
-        let mars = planet(radius: 1.5, image: TextureCache.mars, fallback: UIColor.systemRed)
-        mars.position = ringPosition(-62, 30, 1)
+        let mars = planetNode(radius: 1.7, image: TextureCache.mars, normal: TextureCache.marsNormal, fallback: UIColor.systemRed)
+        mars.position = ringPosition(-52, 36, -10)
         mars.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.5, z: 0, duration: 26)))
-        scene.rootNode.addChildNode(mars)
+        let marsHalo = sprite(TextureCache.haloWarm, 4.4, 4.4)
+        marsHalo.opacity = 0.6
+        mars.addChildNode(marsHalo)
+        rig.addChildNode(mars)
 
         // Сатурн с кольцами
-        let saturn = planet(radius: 3.0, image: TextureCache.saturn, fallback: UIColor(red: 0.82, green: 0.68, blue: 0.5, alpha: 1))
-        saturn.position = ringPosition(24, 33, 0.5)
-        let ring = SCNTube(innerRadius: 4.0, outerRadius: 6.2, height: 0.04)
-        let rm = SCNMaterial()
-        rm.diffuse.contents = UIColor(red: 0.88, green: 0.78, blue: 0.60, alpha: 1)
-        rm.transparency = 0.7
-        rm.isDoubleSided = true
-        ring.materials = [rm]
-        let ringNode = SCNNode(geometry: ring)
-        ringNode.eulerAngles.x = 0.4
-        saturn.addChildNode(ringNode)
+        let saturnHolder = SCNNode()
+        saturnHolder.position = ringPosition(30, 40, -8)
+        let saturn = planetNode(radius: 3.2, image: TextureCache.saturn, normal: nil, fallback: UIColor(red: 0.82, green: 0.68, blue: 0.5, alpha: 1))
         saturn.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.4, z: 0, duration: 30)))
-        scene.rootNode.addChildNode(saturn)
+        saturnHolder.addChildNode(saturn)
+        let ringPlane = SCNPlane(width: 14, height: 14)
+        let rm = SCNMaterial()
+        rm.lightingModel = .constant
+        if let rimg = TextureCache.saturnRing {
+            rm.diffuse.contents = rimg
+        } else {
+            rm.diffuse.contents = UIColor(red: 0.88, green: 0.78, blue: 0.60, alpha: 0.6)
+        }
+        rm.isDoubleSided = true
+        ringPlane.materials = [rm]
+        let ringNode = SCNNode(geometry: ringPlane)
+        ringNode.eulerAngles.x = -Float.pi / 2 + 0.42
+        ringNode.eulerAngles.z = 0.18
+        ringNode.castsShadow = false
+        saturnHolder.addChildNode(ringNode)
+        rig.addChildNode(saturnHolder)
+    }
 
-        // Звёзды (одна общая геометрия)
-        let starGeo = SCNSphere(radius: 0.12)
-        starGeo.segmentCount = 6
-        let stm = SCNMaterial()
-        stm.lightingModel = .constant
-        stm.diffuse.contents = UIColor.white
-        starGeo.materials = [stm]
+    // MARK: Звёзды
+
+    private func buildStars() {
+        var geos: [SCNGeometry] = []
+        let tints: [UIColor] = [
+            UIColor.white,
+            UIColor(red: 0.75, green: 0.85, blue: 1.0, alpha: 1),
+            UIColor(red: 1.0, green: 0.9, blue: 0.7, alpha: 1)
+        ]
+        for c in tints {
+            let g = SCNSphere(radius: 0.08)
+            g.segmentCount = 6
+            let m = SCNMaterial()
+            m.lightingModel = .constant
+            m.diffuse.contents = c
+            g.materials = [m]
+            geos.append(g)
+        }
         let stars = SCNNode()
-        for _ in 0..<350 {
+        for i in 0..<420 {
             var x: Float = 0
             var y: Float = 0
             var z: Float = 0
@@ -1886,25 +2294,167 @@ final class SpaceScene {
                 tries += 1
             } while (len > 1 || len < 0.2) && tries < 20
             if len > 1 || len < 0.2 { continue }
-            let d = Float.random(in: 60...90) / len
-            let n = SCNNode(geometry: starGeo)
+            let d = Float.random(in: 80...110) / len
+            let n = SCNNode(geometry: geos[i % geos.count])
             n.position = SCNVector3(x * d, y * d, z * d)
-            let k = Float.random(in: 0.4...1.3)
+            let k = Float.random(in: 0.4...1.4)
             n.scale = SCNVector3(k, k, k)
+            n.castsShadow = false
             stars.addChildNode(n)
         }
         scene.rootNode.addChildNode(stars)
+        // Яркие звёзды со свечением
+        for _ in 0..<16 {
+            let a = Float.random(in: 0...(2 * Float.pi))
+            let e = Float.random(in: -0.5...1.0)
+            let d: Float = 95
+            let g = sprite(TextureCache.burst, 3.2, 3.2)
+            g.position = SCNVector3(d * cos(e) * sin(a), d * sin(e), -d * cos(e) * cos(a))
+            g.opacity = CGFloat(Float.random(in: 0.5...0.95))
+            scene.rootNode.addChildNode(g)
+        }
     }
+
+    // MARK: Лучи света (объёмный свет)
+
+    private func buildBeams(from sun: SCNVector3) {
+        rig.addChildNode(beamsNode)
+        guard let tex = TextureCache.beam else { return }
+        let mat = SCNMaterial()
+        mat.lightingModel = .constant
+        mat.diffuse.contents = tex
+        mat.blendMode = .add
+        mat.writesToDepthBuffer = false
+        mat.isDoubleSided = true
+        for _ in 0..<11 {
+            let target = SCNVector3(Float.random(in: -6...6), Float.random(in: 0...3.5), Float.random(in: -4...3))
+            let dx = target.x - sun.x
+            let dy = target.y - sun.y
+            let dz = target.z - sun.z
+            let length = (dx * dx + dy * dy + dz * dz).squareRoot()
+            let holder = SCNNode()
+            holder.position = SCNVector3((sun.x + target.x) / 2, (sun.y + target.y) / 2, (sun.z + target.z) / 2)
+            beamsNode.addChildNode(holder)
+            holder.look(at: target)
+            let width = CGFloat(Float.random(in: 1.4...3.6))
+            for k in 0..<2 {
+                let spin = SCNNode()
+                spin.eulerAngles.z = Float(k) * Float.pi / 2 + Float.random(in: 0...0.5)
+                let plane = SCNPlane(width: width, height: CGFloat(length * 1.05))
+                plane.materials = [mat]
+                let pn = SCNNode(geometry: plane)
+                pn.eulerAngles.x = Float.pi / 2
+                pn.castsShadow = false
+                spin.addChildNode(pn)
+                holder.addChildNode(spin)
+            }
+            let base = CGFloat(Float.random(in: 0.12...0.26))
+            holder.opacity = base
+            let up = SCNAction.fadeOpacity(to: base * 1.5, duration: Double.random(in: 2.5...5.0))
+            let down = SCNAction.fadeOpacity(to: base * 0.55, duration: Double.random(in: 2.5...5.0))
+            up.timingMode = .easeInEaseOut
+            down.timingMode = .easeInEaseOut
+            holder.runAction(SCNAction.repeatForever(SCNAction.sequence([up, down])))
+        }
+    }
+
+    // MARK: Пылинки в свете
+
+    private func buildDust() {
+        let ps = SCNParticleSystem()
+        ps.loops = true
+        ps.birthRate = 14
+        ps.warmupDuration = 10
+        ps.particleLifeSpan = 14
+        ps.particleLifeSpanVariation = 4
+        ps.emitterShape = SCNBox(width: 15, height: 5, length: 15, chamferRadius: 0)
+        ps.birthLocation = .volume
+        ps.birthDirection = .random
+        ps.particleVelocity = 0.12
+        ps.particleVelocityVariation = 0.1
+        ps.acceleration = SCNVector3(0.01, 0.015, 0)
+        ps.particleSize = 0.07
+        ps.particleSizeVariation = 0.05
+        ps.particleColor = UIColor(red: 1.0, green: 0.9, blue: 0.75, alpha: 0.6)
+        ps.blendMode = .additive
+        ps.isLightingEnabled = false
+        if let img = TextureCache.dust { ps.particleImage = img }
+        dustNode.position = SCNVector3(0, 2.6, 0)
+        dustNode.addParticleSystem(ps)
+        scene.rootNode.addChildNode(dustNode)
+    }
+
+    // MARK: Постамент с отражением
+
+    private func buildPedestal() {
+        let box = SCNBox(width: 18, height: 0.5, length: 18, chamferRadius: 0.12)
+        let bm = SCNMaterial()
+        bm.lightingModel = .physicallyBased
+        bm.diffuse.contents = UIColor(red: 0.025, green: 0.027, blue: 0.035, alpha: 1)
+        bm.roughness.contents = 0.14
+        bm.metalness.contents = 0.0
+        box.materials = [bm]
+        let pn = SCNNode(geometry: box)
+        pn.position = SCNVector3(0, -0.725, 0)
+        scene.rootNode.addChildNode(pn)
+
+        let fl = SCNFloor()
+        fl.width = 17.7
+        fl.length = 17.7
+        fl.reflectivity = 0.30
+        fl.reflectionFalloffStart = 0
+        fl.reflectionFalloffEnd = 4.5
+        fl.reflectionResolutionScaleFactor = 0.6
+        fl.reflectionSampleCount = 4
+        let fm = SCNMaterial()
+        fm.lightingModel = .physicallyBased
+        fm.diffuse.contents = UIColor(red: 0.02, green: 0.022, blue: 0.03, alpha: 1)
+        fm.roughness.contents = 0.16
+        fm.metalness.contents = 0.0
+        fl.materials = [fm]
+        floorNode.geometry = fl
+        floorNode.position = SCNVector3(0, -0.474, 0)
+        scene.rootNode.addChildNode(floorNode)
+
+        // Золотой кант и угловые светильники
+        let edge: [(CGFloat, CGFloat, Float, Float)] = [
+            (18.0, 0.07, 0, 8.965), (18.0, 0.07, 0, -8.965), (0.07, 18.0, 8.965, 0), (0.07, 18.0, -8.965, 0)
+        ]
+        for (w, l, x, z) in edge {
+            let b = SCNBox(width: w, height: 0.05, length: l, chamferRadius: 0.012)
+            b.materials = [PieceBuilder.gold]
+            let n = SCNNode(geometry: b)
+            n.position = SCNVector3(x, -0.47, z)
+            n.castsShadow = false
+            scene.rootNode.addChildNode(n)
+        }
+        let lampMat = SCNMaterial()
+        lampMat.lightingModel = .constant
+        lampMat.diffuse.contents = UIColor(red: 1.0, green: 0.85, blue: 0.55, alpha: 1)
+        lampMat.emission.contents = UIColor(red: 1.0, green: 0.8, blue: 0.45, alpha: 1)
+        lampMat.emission.intensity = 3.0
+        for (x, z) in [(Float(8.5), Float(8.5)), (Float(-8.5), Float(8.5)), (Float(8.5), Float(-8.5)), (Float(-8.5), Float(-8.5))] {
+            let s = SCNSphere(radius: 0.2)
+            s.segmentCount = 20
+            s.materials = [lampMat]
+            let n = SCNNode(geometry: s)
+            n.position = SCNVector3(x, -0.2, z)
+            n.castsShadow = false
+            scene.rootNode.addChildNode(n)
+            let g = sprite(TextureCache.glowWarm, 2.2, 2.2)
+            g.position = SCNVector3(x, -0.2, z)
+            g.opacity = 0.8
+            scene.rootNode.addChildNode(g)
+        }
+    }
+
+    // MARK: Камера и свет
 
     private func buildCameraAndLights() {
         let cam = SCNCamera()
         cam.zNear = 0.1
-        cam.zFar = 200
+        cam.zFar = 300
         cam.fieldOfView = 55
-        cam.wantsHDR = true
-        cam.bloomIntensity = 0.9
-        cam.bloomThreshold = 1.0
-        cam.bloomBlurRadius = 8
         camNode.camera = cam
         camNode.position = baseCam
         camNode.look(at: SCNVector3(0, 0, -0.3))
@@ -1912,40 +2462,111 @@ final class SpaceScene {
         orbit.addChildNode(pitch)
         scene.rootNode.addChildNode(orbit)
 
-        let sunLight = SCNLight()
-        sunLight.type = .directional
-        sunLight.intensity = 900
-        sunLight.color = UIColor(red: 1.0, green: 0.96, blue: 0.88, alpha: 1)
-        sunLight.castsShadow = true
-        sunLight.shadowMode = .deferred
-        sunLight.shadowSampleCount = 8
-        sunLight.shadowRadius = 3.5
-        sunLight.shadowColor = UIColor(white: 0, alpha: 0.55)
-        let ln = SCNNode()
-        ln.light = sunLight
-        ln.position = SCNVector3(5, 15, 9)
-        ln.look(at: SCNVector3Zero)
-        scene.rootNode.addChildNode(ln)
+        // Контровой тёплый свет от «солнца» — отбрасывает длинные тени к игроку
+        let back = SCNLight()
+        back.type = .directional
+        back.intensity = 1500
+        back.color = UIColor(red: 1.0, green: 0.82, blue: 0.6, alpha: 1)
+        back.castsShadow = true
+        back.shadowMode = .deferred
+        back.shadowRadius = 3.5
+        back.shadowColor = UIColor(white: 0, alpha: 0.62)
+        let bn = SCNNode()
+        bn.light = back
+        bn.position = SCNVector3(-6, 10, -14)
+        rig.addChildNode(bn)
+        bn.look(at: SCNVector3Zero)
+        backLight = back
+
+        // Основной мягкий свет спереди-слева
+        let key = SCNLight()
+        key.type = .spot
+        key.intensity = 1000
+        key.color = UIColor(red: 1.0, green: 0.96, blue: 0.9, alpha: 1)
+        key.spotInnerAngle = 25
+        key.spotOuterAngle = 80
+        let kn = SCNNode()
+        kn.light = key
+        kn.position = SCNVector3(7, 13, 11)
+        rig.addChildNode(kn)
+        kn.look(at: SCNVector3Zero)
+
+        // Холодная подсветка теней
+        let fill = SCNLight()
+        fill.type = .directional
+        fill.intensity = 300
+        fill.color = UIColor(red: 0.55, green: 0.68, blue: 1.0, alpha: 1)
+        let fn = SCNNode()
+        fn.light = fill
+        fn.position = SCNVector3(-8, 4, 8)
+        rig.addChildNode(fn)
+        fn.look(at: SCNVector3Zero)
 
         let amb = SCNLight()
         amb.type = .ambient
-        amb.intensity = 260
+        amb.intensity = 160
+        amb.color = UIColor(red: 0.7, green: 0.75, blue: 1.0, alpha: 1)
         let an = SCNNode()
         an.light = amb
         scene.rootNode.addChildNode(an)
-
-        let fill = SCNLight()
-        fill.type = .directional
-        fill.intensity = 250
-        fill.color = UIColor(red: 0.6, green: 0.7, blue: 1.0, alpha: 1)
-        let fn = SCNNode()
-        fn.light = fill
-        fn.position = SCNVector3(-8, 6, -8)
-        fn.look(at: SCNVector3Zero)
-        scene.rootNode.addChildNode(fn)
     }
 
-    // MARK: Камера
+    // MARK: Качество графики
+
+    func applyQuality(_ q: GraphicsQuality) {
+        guard let cam = camNode.camera else { return }
+        switch q {
+        case .standard:
+            cam.wantsHDR = false
+            cam.screenSpaceAmbientOcclusionIntensity = 0
+            cam.vignettingIntensity = 0
+            cam.grainIntensity = 0
+            cam.colorFringeStrength = 0
+            backLight?.shadowMapSize = CGSize(width: 1024, height: 1024)
+            backLight?.shadowSampleCount = 4
+            beamsNode.isHidden = true
+            dustNode.isHidden = true
+            floorNode.isHidden = true
+        case .high:
+            configureFilmLook(cam)
+            cam.screenSpaceAmbientOcclusionIntensity = 0
+            cam.grainIntensity = 0
+            cam.colorFringeStrength = 0
+            backLight?.shadowMapSize = CGSize(width: 2048, height: 2048)
+            backLight?.shadowSampleCount = 8
+            beamsNode.isHidden = false
+            dustNode.isHidden = false
+            floorNode.isHidden = true
+        case .ultra:
+            configureFilmLook(cam)
+            cam.screenSpaceAmbientOcclusionIntensity = 0.8
+            cam.screenSpaceAmbientOcclusionRadius = 0.5
+            cam.screenSpaceAmbientOcclusionBias = 0.03
+            cam.screenSpaceAmbientOcclusionDepthThreshold = 0.2
+            cam.screenSpaceAmbientOcclusionNormalThreshold = 0.3
+            cam.grainIntensity = 0.1
+            cam.grainScale = 1.5
+            cam.colorFringeStrength = 1.0
+            backLight?.shadowMapSize = CGSize(width: 4096, height: 4096)
+            backLight?.shadowSampleCount = 16
+            beamsNode.isHidden = false
+            dustNode.isHidden = false
+            floorNode.isHidden = false
+        }
+    }
+
+    private func configureFilmLook(_ cam: SCNCamera) {
+        cam.wantsHDR = true
+        cam.bloomIntensity = 0.9
+        cam.bloomThreshold = 1.05
+        cam.bloomBlurRadius = 10
+        cam.vignettingIntensity = 0.55
+        cam.vignettingPower = 1.2
+        cam.saturation = 1.08
+        cam.contrast = 0.06
+    }
+
+    // MARK: Управление видом
 
     func startMenuOrbit() {
         orbit.removeAction(forKey: "focus")
@@ -1960,6 +2581,7 @@ final class SpaceScene {
         camNode.position = baseCam
         let target: CGFloat = flipped ? CGFloat.pi : 0
         orbit.runAction(SCNAction.rotateTo(x: 0, y: target, z: 0, duration: 0.9, usesShortestUnitArc: true), forKey: "focus")
+        rig.runAction(SCNAction.rotateTo(x: 0, y: target, z: 0, duration: 0.9, usesShortestUnitArc: true), forKey: "focus")
     }
 
     func pan(dx: CGFloat, dy: CGFloat) {
@@ -2618,6 +3240,15 @@ struct SettingsModalView: View {
                     Toggle("Звуковые эффекты", isOn: $gm.sfxEnabled)
                     Toggle("Фоновая музыка космоса", isOn: $gm.musicEnabled)
                     Toggle("Голос комментатора", isOn: $gm.voiceEnabled)
+                }
+                Section(header: Text("Графика")) {
+                    Picker("Качество", selection: $gm.graphicsQuality) {
+                        ForEach(GraphicsQuality.allCases) { q in Text(q.rawValue).tag(q) }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Ультра: отражения, лучи света, тени 4K, мягкое затенение. Если игра тормозит, выбери «Высокое» или «Стандарт».")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
                 Section(header: Text("Игра")) {
                     Toggle("Подсвечивать доступные ходы", isOn: $gm.showHints)
