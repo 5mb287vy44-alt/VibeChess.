@@ -227,11 +227,10 @@ jobs:
               rgba[..., 3] = u8(a)
               save_png(out("earth_clouds.png"), rgba)
 
-          def make_rock(name, base0, base1, craters, seed):
-              w, h = 1024, 512
+          def make_rock(name, base0, base1, craters, seed, w=1024, h=512):
               U, V = grid(w, h)
               hm = 0.6 * fbm(U, V, 6, 3, 6, seed) + 0.4 * fbm(U, V, 24, 12, 4, seed + 3)
-              hm = add_craters(hm.astype(np.float32), craters, seed, 6, 34, 0.18)
+              hm = add_craters(hm.astype(np.float32), craters, seed, 5, 24, 0.18)
               n = fbm(U, V, 5, 3, 5, seed + 9)
               t = np.clip(0.25 + 0.6 * n + 0.8 * (hm - hm.mean()), 0, 1)
               col = mix(base0, base1, t)
@@ -241,6 +240,34 @@ jobs:
                   col = col * (1 - cap[..., None]) + np.array([240, 236, 236], dtype=np.float32) * cap[..., None]
               save_png(out(name + "_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
               save_png(out(name + "_normal.png"), normal_map(hm, 9.0))
+
+          def make_venus():
+              w, h = 512, 256
+              U, V = grid(w, h)
+              turb = fbm(U, V, 4, 3, 5, 111)
+              chev = 0.5 + 0.5 * np.sin(V * 28 + 3.8 * turb + 1.8 * np.cos(U * 2 * np.pi))
+              swirl = fbm(U, V, 8, 4, 4, 113)
+              t = np.clip(0.20 + 0.50 * chev + 0.30 * swirl, 0, 1)
+              col = mix((168, 118, 62), (246, 224, 168), t)
+              save_png(out("venus_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
+
+          def make_jupiter():
+              w, h = 1024, 512
+              U, V = grid(w, h)
+              turb = fbm(U, V, 8, 4, 5, 121)
+              turb2 = fbm(U, V, 18, 9, 4, 123)
+              vw = V + 0.028 * (turb - 0.5) + 0.014 * (turb2 - 0.5)
+              b1 = 0.5 + 0.5 * np.sin(vw * 58)
+              b2 = 0.5 + 0.5 * np.sin(vw * 24 + 1.1)
+              eq = np.exp(-((vw - 0.50) / 0.08) ** 2)
+              col = mix((148, 98, 62), (238, 220, 190), np.clip(0.55 * b1 + 0.35 * b2 + 0.25 * eq, 0, 1))
+              dark_belt = np.exp(-((vw - 0.38) / 0.04) ** 2) + np.exp(-((vw - 0.62) / 0.045) ** 2)
+              col = mix(col, (124, 66, 40), np.clip(dark_belt * 0.72, 0, 1))
+              du = ((U - 0.50 + 0.5) % 1.0) - 0.5
+              dv = V - 0.63
+              grs = np.exp(-((du / 0.055) ** 2 + (dv / 0.042) ** 2))
+              col = mix(col, (204, 78, 42), np.clip(grs * 0.90, 0, 1))
+              save_png(out("jupiter_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
 
           def make_saturn():
               w, h = 1024, 512
@@ -267,6 +294,55 @@ jobs:
               rgba[..., 3] = u8(alpha)
               save_png(out("saturn_ring.png"), rgba)
 
+          def make_uranus():
+              w, h = 512, 256
+              U, V = grid(w, h)
+              band = 0.5 + 0.5 * np.sin(V * 24)
+              n = fbm(U, V, 6, 3, 4, 141)
+              t = np.clip(0.35 + 0.35 * band + 0.30 * n, 0, 1)
+              col = mix((102, 198, 214), (186, 240, 246), t)
+              save_png(out("uranus_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
+              s = 512
+              U, V = grid(s, s)
+              r = np.sqrt((U - 0.5) ** 2 + (V - 0.5) ** 2) / 0.5
+              prof = smooth(0.56, 0.59, r) * (1 - smooth(0.92, 0.96, r))
+              rings = (0.35 + 0.65 * (np.sin(r * 130) ** 2)) * prof * 0.45
+              c = mix((135, 190, 210), (210, 240, 250), np.clip(rings * 2, 0, 1))
+              rgba = np.zeros((s, s, 4), dtype=np.uint8)
+              rgba[..., :3] = np.clip(c, 0, 255).astype(np.uint8)
+              rgba[..., 3] = u8(rings)
+              save_png(out("uranus_ring.png"), rgba)
+
+          def make_neptune():
+              w, h = 512, 256
+              U, V = grid(w, h)
+              turb = fbm(U, V, 8, 4, 5, 151)
+              band = 0.5 + 0.5 * np.sin(V * 36 + turb * 3.0)
+              cirrus = np.clip((fbm(U, V, 12, 6, 3, 155) - 0.66) * 5.0, 0, 1)
+              col = mix((26, 58, 168), (68, 132, 236), band)
+              col = mix(col, (195, 228, 255), cirrus * 0.75)
+              du = ((U - 0.45 + 0.5) % 1.0) - 0.5
+              dv = V - 0.58
+              gds = np.exp(-((du / 0.06) ** 2 + (dv / 0.045) ** 2))
+              col = mix(col, (16, 30, 102), gds * 0.85)
+              save_png(out("neptune_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
+
+          def make_pluto():
+              w, h = 512, 256
+              U, V = grid(w, h)
+              n = fbm(U, V, 6, 3, 5, 161)
+              col = mix((116, 78, 58), (206, 174, 146), n)
+              du = ((U - 0.48 + 0.5) % 1.0) - 0.5
+              dv = V - 0.52
+              l1 = np.exp(-(((du + 0.045) / 0.055) ** 2 + ((dv - 0.015) / 0.070) ** 2))
+              l2 = np.exp(-(((du - 0.045) / 0.055) ** 2 + ((dv + 0.010) / 0.065) ** 2))
+              heart = np.clip(np.maximum(l1, l2) * 1.15, 0, 1)
+              col = mix(col, (238, 228, 212), heart * 0.85)
+              save_png(out("pluto_texture.png"), np.clip(col, 0, 255).astype(np.uint8))
+
+          def make_asteroid():
+              make_rock("asteroid", (58, 54, 52), (138, 130, 122), 70, 171, w=256, h=256)
+
           def make_sun():
               w, h = 1024, 512
               U, V = grid(w, h)
@@ -282,30 +358,33 @@ jobs:
               n1 = fbm(U, V, 3, 2, 6, 201)
               n2 = fbm(U, V, 5, 3, 6, 211)
               n3 = fbm(U, V, 4, 2, 5, 221)
-              neb1 = np.clip((n1 - 0.42) * 2.4, 0, 1) ** 1.6
-              neb2 = np.clip((n2 - 0.48) * 2.6, 0, 1) ** 1.7
-              neb3 = np.clip((n3 - 0.50) * 3.0, 0, 1) ** 1.8
-              band_c = 0.5 + 0.12 * np.sin(2 * np.pi * U * 1.0)
-              band = np.exp(-((V - band_c) / 0.10) ** 2)
+              n4 = fbm(U, V, 7, 4, 5, 241)
+              neb1 = np.clip((n1 - 0.38) * 2.5, 0, 1) ** 1.5
+              neb2 = np.clip((n2 - 0.44) * 2.6, 0, 1) ** 1.6
+              neb3 = np.clip((n3 - 0.46) * 2.8, 0, 1) ** 1.7
+              neb4 = np.clip((n4 - 0.48) * 2.6, 0, 1) ** 1.6
+              band_c = 0.5 + 0.14 * np.sin(2 * np.pi * U * 1.0)
+              band = np.exp(-((V - band_c) / 0.12) ** 2)
               dust = fbm(U, V, 10, 5, 5, 231)
               col = np.zeros((h, w, 3), dtype=np.float32)
-              col += neb1[..., None] * np.array([0.07, 0.22, 0.40], dtype=np.float32)
-              col += neb2[..., None] * np.array([0.38, 0.09, 0.28], dtype=np.float32)
-              col += neb3[..., None] * np.array([0.30, 0.16, 0.05], dtype=np.float32)
-              col += (band * (0.35 + 0.65 * dust))[..., None] * np.array([0.20, 0.18, 0.17], dtype=np.float32)
-              col *= (1 - 0.65 * (band * np.clip((dust - 0.55) * 3, 0, 1)))[..., None]
-              col += 0.004
+              col += neb1[..., None] * np.array([0.06, 0.25, 0.46], dtype=np.float32)
+              col += neb2[..., None] * np.array([0.44, 0.10, 0.34], dtype=np.float32)
+              col += neb3[..., None] * np.array([0.36, 0.18, 0.06], dtype=np.float32)
+              col += neb4[..., None] * np.array([0.12, 0.34, 0.36], dtype=np.float32)
+              col += (band * (0.40 + 0.65 * dust))[..., None] * np.array([0.24, 0.20, 0.22], dtype=np.float32)
+              col *= (1 - 0.68 * (band * np.clip((dust - 0.55) * 3, 0, 1)))[..., None]
+              col += 0.005
               r = np.random.default_rng(5)
-              count = 14000
+              count = 20000
               sx = r.integers(0, w, count); sy = r.integers(0, h, count)
-              br = r.random(count) ** 4.0
+              br = r.random(count) ** 3.8
               tint = r.random(count)
               for dx in (-1, 0, 1):
                   for dy in (-1, 0, 1):
-                      fall = 1.0 if dx == 0 and dy == 0 else 0.25
+                      fall = 1.0 if dx == 0 and dy == 0 else 0.28
                       yy = np.clip(sy + dy, 0, h - 1); xx = (sx + dx) % w
                       for ch, mult in enumerate((1.0 - 0.3 * tint, 1.0 - 0.1 * tint, 0.7 + 0.3 * tint)):
-                          np.add.at(col[..., ch], (yy, xx), br * fall * mult * (0.25 + 1.0 * band[yy, xx]))
+                          np.add.at(col[..., ch], (yy, xx), br * fall * mult * (0.28 + 1.0 * band[yy, xx]))
               save_png(out("sky_nebula.png"), u8(np.clip(col, 0, 1) ** 0.85))
 
           def make_env():
@@ -426,6 +505,36 @@ jobs:
               ring_col = mix((185, 110, 255), (255, 238, 195), np.clip(photon * 1.3, 0, 1))
               save_png(out("fx_blackhole_ring.png"), rgba_map(ring_col, ring_alpha))
 
+          def make_nebulae():
+              def make_neb(filename, c_in, c_out, seed):
+                  s = 512
+                  U, V = grid(s, s)
+                  X = (U - 0.5) * 2
+                  Y = (V - 0.5) * 2
+                  R = np.sqrt(X * X + Y * Y)
+                  w1 = fbm(U, V, 3, 3, 5, seed)
+                  w2 = fbm(U, V, 6, 6, 4, seed + 13)
+                  wisp = np.clip((0.65 * w1 + 0.35 * w2 - 0.30) * 2.1, 0, 1) ** 1.35
+                  fall = (1 - smooth(0.18, 0.98, R)) ** 1.5
+                  alpha = np.clip(wisp * fall * 0.85, 0, 1)
+                  col = mix(c_out, c_in, np.clip(wisp * fall * 1.35, 0, 1))
+                  save_png(out(filename), rgba_map(col, alpha))
+              make_neb("fx_nebula_cyan.png", (125, 235, 255), (20, 95, 210), 401)
+              make_neb("fx_nebula_purple.png", (255, 140, 235), (110, 30, 195), 419)
+              make_neb("fx_nebula_gold.png", (255, 215, 130), (195, 75, 40), 437)
+
+          def make_comet_fx():
+              w, h = 512, 128
+              U, V = grid(w, h)
+              X = U
+              Y = (V - 0.5) * 2
+              spread = 0.14 + 0.68 * X
+              core = np.exp(-((Y / spread) ** 2) * 3.2)
+              fade = smooth(0.0, 0.06, X) * ((1 - smooth(0.06, 1.0, X)) ** 1.5)
+              alpha = np.clip(core * fade * 0.95, 0, 1)
+              col = mix((115, 200, 255), (245, 252, 255), np.clip(core * (1 - X * 0.55), 0, 1))
+              save_png(out("fx_comet_tail.png"), rgba_map(col, alpha))
+
           def make_icon():
               s = 1024
               U, V = grid(s, s)
@@ -462,10 +571,13 @@ jobs:
 
           import time
           t0 = time.time()
-          for fn in (make_wood, make_marble, make_piece_textures, make_earth,
+          for fn in (make_wood, make_marble, make_piece_textures,
+                     lambda: make_rock("mercury", (72, 68, 66), (168, 162, 154), 130, 31, 512, 256),
+                     make_venus, make_earth,
                      lambda: make_rock("mars", (95, 40, 24), (210, 118, 72), 90, 61),
                      lambda: make_rock("moon", (70, 70, 72), (200, 198, 192), 160, 131),
-                     make_saturn, make_sun, make_sky, make_env, make_fx, make_blackhole_fx, make_icon):
+                     make_jupiter, make_saturn, make_uranus, make_neptune, make_pluto, make_asteroid,
+                     make_sun, make_sky, make_env, make_fx, make_blackhole_fx, make_nebulae, make_comet_fx, make_icon):
               fn()
               print("visual ok", round(time.time() - t0, 1), "s")
 
@@ -771,12 +883,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="v4.0.${{ github.run_number }}"
+          VERSION="v5.0.${{ github.run_number }}"
           gh release create "$VERSION" VibeChess.ipa \
-            --title "VibeChess $VERSION (photoreal graphics)" \
-            --notes "Версия 4.0:
-            - Свободный полёт доски в открытом космосе без постамента
-            - Чёрная дыра из-под клетки при съедении фигуры
-            - Обновлённая космическая музыка и объёмные звуковые эффекты
-            - Фотореалистичные материалы: нормали, шероховатость, мрамор и орех
-            - Объёмные лучи света, пыль в лучах, планеты с атмосферой и кольцами Сатурна"
+            --title "VibeChess $VERSION (full Solar System)" \
+            --notes "Версия 5.0:
+            - Полная Солнечная система: все 8 планет, Плутон, Церера, спутники, кольца, комета, пояс астероидов и пояс Койпера
+            - Планеты, спутники, доска, звёзды и туманности вращаются вокруг Солнца и своих осей
+            - Объёмные многослойные туманности космоса
+            - Чёрная дыра из-под клетки при взятии фигуры
+            - Обновлённая космическая музыка и звуковые эффекты"
