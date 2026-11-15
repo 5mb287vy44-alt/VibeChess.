@@ -3,6 +3,7 @@ import SceneKit
 import ARKit
 import AVFoundation
 import AudioToolbox
+import CoreMotion
 import UIKit
 
 enum Side: String, Codable {
@@ -30,6 +31,12 @@ enum TimeControl: String, CaseIterable, Identifiable, Codable {
 enum GameMode: String, CaseIterable, Identifiable, Codable {
     case vsBot = "1 Игрок (vs Бот)"
     case passAndPlay = "2 Игрока (Вдвоем)"
+    var id: String { rawValue }
+}
+
+enum ControlMode: String, CaseIterable, Identifiable, Codable {
+    case tap = "Нажатие"
+    case drag = "Руками (Физика)"
     var id: String { rawValue }
 }
 
@@ -701,7 +708,11 @@ final class GameManager: ObservableObject {
     @Published var isPaused = false
     @Published var statusText = "Выбери режим и начни партию"
     @Published var lastMoveNotation = "Начало партии"
-    @Published var isARMode = false
+    @Published var isARMode = false {
+        didSet {
+            if isARMode && controlMode == .drag { controlMode = .tap }
+        }
+    }
     @Published var isAnimating = false
     @Published var isThinking = false
     @Published var isCheckNow = false
@@ -720,12 +731,24 @@ final class GameManager: ObservableObject {
 
     @Published var playerSide: Side = .white { didSet { saveSettings() } }
     @Published var mode: GameMode = .vsBot { didSet { saveSettings() } }
+    @Published var controlMode: ControlMode = .tap {
+        didSet {
+            saveSettings()
+            applyControlMode()
+        }
+    }
     @Published var difficulty: BotDifficulty = .hard { didSet { saveSettings() } }
     @Published var timeControl: TimeControl = .rapid5 { didSet { saveSettings() } }
     @Published var sfxEnabled = true { didSet { saveSettings() } }
     @Published var musicEnabled = true { didSet { saveSettings(); SoundEngine.shared.toggleMusic(musicEnabled) } }
     @Published var voiceEnabled = true { didSet { saveSettings() } }
     @Published var showHints = true { didSet { saveSettings(); refreshHighlights() } }
+    @Published var gyroEnabled = false {
+        didSet {
+            saveSettings()
+            space.setGyroEnabled(gyroEnabled)
+        }
+    }
     @Published var graphicsQuality: GraphicsQuality = .ultra {
         didSet {
             saveSettings()
@@ -747,6 +770,7 @@ final class GameManager: ObservableObject {
     private var gameToken = 0
     private var pendingBotMove: Move? = nil
     private var isLoadingSettings = false
+    private var draggingSourceSquare: Int? = nil
 
     init() {
         isLoadingSettings = true
@@ -756,6 +780,8 @@ final class GameManager: ObservableObject {
         positionCounts = [board.key: 1]
         boardCtl.reset(board: board, flipped: false)
         space.applyQuality(graphicsQuality)
+        space.setGyroEnabled(gyroEnabled)
+        applyControlMode()
         SoundEngine.shared.toggleMusic(musicEnabled)
     }
 
@@ -774,6 +800,8 @@ final class GameManager: ObservableObject {
         d.set(musicEnabled, forKey: "Vibe_Music")
         d.set(voiceEnabled, forKey: "Vibe_Voice")
         d.set(showHints, forKey: "Vibe_Hints")
+        d.set(gyroEnabled, forKey: "Vibe_Gyro")
+        d.set(controlMode.rawValue, forKey: "Vibe_CtrlMode")
         d.set(graphicsQuality.rawValue, forKey: "Vibe_Quality")
         d.set(mode.rawValue, forKey: "Vibe_Mode")
         d.set(difficulty.rawValue, forKey: "Vibe_Diff")
@@ -787,6 +815,8 @@ final class GameManager: ObservableObject {
         if d.object(forKey: "Vibe_Music") != nil { musicEnabled = d.bool(forKey: "Vibe_Music") }
         if d.object(forKey: "Vibe_Voice") != nil { voiceEnabled = d.bool(forKey: "Vibe_Voice") }
         if d.object(forKey: "Vibe_Hints") != nil { showHints = d.bool(forKey: "Vibe_Hints") }
+        if d.object(forKey: "Vibe_Gyro") != nil { gyroEnabled = d.bool(forKey: "Vibe_Gyro") }
+        if let m = d.string(forKey: "Vibe_CtrlMode"), let v = ControlMode(rawValue: m) { controlMode = v }
         if let m = d.string(forKey: "Vibe_Quality"), let v = GraphicsQuality(rawValue: m) { graphicsQuality = v }
         if let m = d.string(forKey: "Vibe_Mode"), let v = GameMode(rawValue: m) { mode = v }
         if let m = d.string(forKey: "Vibe_Diff"), let v = BotDifficulty(rawValue: m) { difficulty = v }
@@ -794,9 +824,27 @@ final class GameManager: ObservableObject {
         if let m = d.string(forKey: "Vibe_Side2"), let v = Side(rawValue: m) { playerSide = v }
     }
 
+    func applyControlMode() {
+        let usePhysics = (controlMode == .drag && !isARMode)
+        space.setOrbitalMotionPaused(usePhysics)
+        boardCtl.setPhysicsEnabled(usePhysics, board: board)
+    }
+
+    func toggleControlMode() {
+        controlMode = (controlMode == .tap) ? .drag : .tap
+        SoundEngine.shared.play("click", enabled: sfxEnabled)
+    }
+
+    func realignPhysicsPieces() {
+        boardCtl.reset(board: board, flipped: shouldFlipCamera)
+        refreshHighlights()
+        SoundEngine.shared.play("select", enabled: sfxEnabled)
+    }
+
     func startNewGame() {
         gameToken += 1
         pendingBotMove = nil
+        draggingSourceSquare = nil
         board = ChessBoard.initial()
         history.removeAll()
         positionCounts = [board.key: 1]
@@ -817,6 +865,7 @@ final class GameManager: ObservableObject {
         isClockActive = (timeControl != .infinite)
         inMenu = false
         boardCtl.reset(board: board, flipped: shouldFlipCamera)
+        applyControlMode()
         space.focus(flipped: shouldFlipCamera)
         refreshHighlights()
         updateStatus()
@@ -849,6 +898,8 @@ final class GameManager: ObservableObject {
     func exitToMenu() {
         gameToken += 1
         pendingBotMove = nil
+        draggingSourceSquare = nil
+        boardCtl.endDrag(releaseVelocity: SCNVector3Zero)
         isThinking = false
         isAnimating = false
         isPaused = false
@@ -885,10 +936,65 @@ final class GameManager: ObservableObject {
         }
     }
 
+    func beginPieceDrag(square s: Int, atLocal: SCNVector3) -> Bool {
+        guard controlMode == .drag, !isARMode, !inMenu, !isPaused, !isAnimating else { return false }
+        guard s >= 0, s < 64 else { return false }
+        guard boardCtl.beginDrag(square: s, atLocal: atLocal) else { return false }
+        draggingSourceSquare = s
+        if !isThinking, gameResult == nil, pendingPromotion == nil, isHumanTurn {
+            let p = board.sq[s]
+            if p != 0 && (p > 0) == board.whiteToMove {
+                selectedSquare = s
+                legalForSelected = board.legalMoves().filter { $0.from == s }
+                refreshHighlights()
+            }
+        }
+        SoundEngine.shared.play("select", enabled: sfxEnabled)
+        return true
+    }
+
+    func updatePieceDrag(toLocal: SCNVector3) {
+        boardCtl.updateDrag(toLocal: toLocal)
+    }
+
+    func endPieceDrag(atLocal: SCNVector3?, releaseVelocity: SCNVector3) {
+        boardCtl.endDrag(releaseVelocity: releaseVelocity)
+        guard let from = draggingSourceSquare else { return }
+        draggingSourceSquare = nil
+
+        if let loc = atLocal,
+           !inMenu, !isPaused, !isAnimating, !isThinking, gameResult == nil, pendingPromotion == nil, isHumanTurn {
+            let p = board.sq[from]
+            if p != 0 && (p > 0) == board.whiteToMove {
+                let col = Int(round(loc.x + 3.5))
+                let row = Int(round(3.5 - loc.z))
+                if col >= 0 && col < 8 && row >= 0 && row < 8 {
+                    let targetSq = row * 8 + col
+                    let tp = boardCtl.pos(targetSq)
+                    let dx = loc.x - tp.x
+                    let dz = loc.z - tp.z
+                    if (dx * dx + dz * dz) < 0.65 * 0.65,
+                       legalForSelected.contains(where: { $0.from == from && $0.to == targetSq }) {
+                        selectedSquare = from
+                        attemptMove(to: targetSq)
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    func knockOverPiece(at square: Int, viewDir: SCNVector3) {
+        guard controlMode == .drag, !isARMode, !inMenu, !isPaused, !isAnimating else { return }
+        boardCtl.topplePiece(at: square, viewDir: viewDir)
+        SoundEngine.shared.play("click", enabled: sfxEnabled)
+        haptic(.medium)
+    }
+
     private func select(_ s: Int) {
         selectedSquare = s
         legalForSelected = board.legalMoves().filter { $0.from == s }
-        boardCtl.setLift(s)
+        if controlMode == .tap { boardCtl.setLift(s) }
         SoundEngine.shared.play("select", enabled: sfxEnabled)
         refreshHighlights()
     }
@@ -1175,6 +1281,7 @@ final class GameManager: ObservableObject {
         lastMoveNotation = "Партия загружена"
         inMenu = false
         boardCtl.reset(board: board, flipped: shouldFlipCamera)
+        applyControlMode()
         space.focus(flipped: shouldFlipCamera)
         refreshHighlights()
         updateStatus()
@@ -1246,6 +1353,7 @@ final class GameManager: ObservableObject {
         boardCtl.root.position = SCNVector3Zero
         boardCtl.root.eulerAngles = SCNVector3Zero
         space.boardMount.addChildNode(boardCtl.root)
+        applyControlMode()
     }
 
     func attachBoard(to node: SCNNode) {
@@ -1253,6 +1361,7 @@ final class GameManager: ObservableObject {
         boardCtl.root.position = SCNVector3Zero
         boardCtl.root.eulerAngles = SCNVector3Zero
         node.addChildNode(boardCtl.root)
+        boardCtl.setPhysicsEnabled(false, board: board)
     }
 }
 
@@ -1300,7 +1409,11 @@ struct TextureCache {
     static let nebulaCyan = load("fx_nebula_cyan")
     static let nebulaPurple = load("fx_nebula_purple")
     static let nebulaGold = load("fx_nebula_gold")
+    static let nebulaEmerald = load("fx_nebula_emerald")
+    static let nebulaCrimson = load("fx_nebula_crimson")
     static let cometTail = load("fx_comet_tail")
+    static let shockwave = load("fx_shockwave")
+    static let flareRing = load("fx_flare_ring")
     static let hlCyan = load("hl_tile_cyan")
     static let hlYellow = load("hl_tile_yellow")
     static let hlRed = load("hl_tile_red")
@@ -1374,6 +1487,17 @@ enum Lathe {
 enum PieceBuilder {
     private static var templates: [Int: SCNNode] = [:]
 
+    static func height(for code: Int8) -> Float {
+        switch abs(Int(code)) {
+        case 1: return 0.89
+        case 2: return 1.15
+        case 3: return 1.35
+        case 4: return 1.08
+        case 5: return 1.42
+        default: return 1.54
+        }
+    }
+
     static func node(for code: Int8) -> SCNNode {
         let key = Int(code)
         if let t = templates[key] { return t.clone() }
@@ -1385,9 +1509,11 @@ enum PieceBuilder {
     static let gold: SCNMaterial = {
         let m = SCNMaterial()
         m.lightingModel = .physicallyBased
-        m.diffuse.contents = UIColor(red: 1.0, green: 0.78, blue: 0.34, alpha: 1)
+        m.diffuse.contents = UIColor(red: 1.0, green: 0.80, blue: 0.36, alpha: 1)
         m.metalness.contents = 1.0
-        m.roughness.contents = 0.26
+        m.roughness.contents = 0.20
+        m.clearCoat.contents = 0.7
+        m.clearCoatRoughness.contents = 0.05
         return m
     }()
 
@@ -1403,8 +1529,15 @@ enum PieceBuilder {
         } else {
             m.diffuse.contents = white ? UIColor(red: 0.95, green: 0.91, blue: 0.82, alpha: 1) : UIColor(red: 0.12, green: 0.10, blue: 0.09, alpha: 1)
         }
-        m.roughness.contents = white ? 0.24 : 0.15
-        m.metalness.contents = white ? 0.0 : 0.2
+        m.roughness.contents = white ? 0.20 : 0.12
+        m.metalness.contents = white ? 0.02 : 0.24
+        m.clearCoat.contents = 1.0
+        m.clearCoatRoughness.contents = 0.05
+        m.shaderModifiers = [
+            SCNShaderModifierEntryPoint.fragment: white
+                ? "#pragma body\nfloat3 n = normalize(_surface.normal);\nfloat3 v = normalize(_surface.view);\nfloat fres = pow(1.0 - saturate(abs(dot(n, v))), 3.4);\n_output.color.rgb += float3(1.0, 0.90, 0.72) * fres * 0.28 + float3(0.28, 0.52, 0.95) * fres * 0.14;\n"
+                : "#pragma body\nfloat3 n = normalize(_surface.normal);\nfloat3 v = normalize(_surface.view);\nfloat fres = pow(1.0 - saturate(abs(dot(n, v))), 3.0);\n_output.color.rgb += float3(0.95, 0.75, 0.42) * fres * 0.24 + float3(0.35, 0.65, 1.0) * fres * 0.18;\n"
+        ]
         return m
     }
 
@@ -1617,19 +1750,26 @@ final class BoardController {
     private let piecesNode = SCNNode()
     private let labelsNode = SCNNode()
     private let fxNode = SCNNode()
+    private let colliderNode = SCNNode()
     private var overlays: [SCNNode] = []
     private var overlayMats: [SCNMaterial] = []
     private var pieceNodes: [Int: SCNNode] = [:]
     private var labelContainers: [SCNNode] = []
     private var liftedSquare: Int? = nil
     private var animationToken = 0
+    private var physicsActive = false
     private let restY: Float = 0.075
+
+    private let dragLock = NSLock()
+    private var draggedNode: SCNNode? = nil
+    private var dragTargetLocal = SCNVector3Zero
 
     init() {
         root.addChildNode(squaresNode)
         root.addChildNode(piecesNode)
         root.addChildNode(labelsNode)
         root.addChildNode(fxNode)
+        root.addChildNode(colliderNode)
         buildSquares()
         buildFrame()
         buildLabels()
@@ -1659,6 +1799,7 @@ final class BoardController {
     }
 
     private func buildSquares() {
+        let fresnelShader = "#pragma body\nfloat3 n = normalize(_surface.normal);\nfloat3 v = normalize(_surface.view);\nfloat fres = pow(1.0 - saturate(abs(dot(n, v))), 4.0);\n_output.color.rgb += float3(0.55, 0.72, 1.0) * fres * 0.14;\n"
         for s in 0..<64 {
             let c = s & 7
             let r = s >> 3
@@ -1678,6 +1819,8 @@ final class BoardController {
                     mat.diffuse.contents = UIColor(red: 0.40, green: 0.25, blue: 0.14, alpha: 1)
                     mat.roughness.contents = 0.45
                 }
+                mat.clearCoat.contents = 0.48
+                mat.clearCoatRoughness.contents = 0.12
             } else {
                 if TextureCache.marble != nil {
                     applyMap(mat.diffuse, TextureCache.marble, tf)
@@ -1687,8 +1830,11 @@ final class BoardController {
                     mat.diffuse.contents = UIColor(red: 0.90, green: 0.87, blue: 0.80, alpha: 1)
                     mat.roughness.contents = 0.25
                 }
+                mat.clearCoat.contents = 0.92
+                mat.clearCoatRoughness.contents = 0.04
             }
             mat.metalness.contents = 0.0
+            mat.shaderModifiers = [SCNShaderModifierEntryPoint.fragment: fresnelShader]
             box.materials = [mat]
             let node = SCNNode(geometry: box)
             node.name = "sq_\(s)"
@@ -1729,6 +1875,8 @@ final class BoardController {
             fm.roughness.contents = 0.4
         }
         fm.metalness.contents = 0.0
+        fm.clearCoat.contents = 0.55
+        fm.clearCoatRoughness.contents = 0.10
         let strips: [(CGFloat, CGFloat, Float, Float)] = [
             (9.9, 0.95, 0, 4.475), (9.9, 0.95, 0, -4.475), (0.95, 8.0, 4.475, 0), (0.95, 8.0, -4.475, 0)
         ]
@@ -1805,6 +1953,114 @@ final class BoardController {
         }
     }
 
+    // MARK: Физика фигур и перетаскивание руками
+
+    func setPhysicsEnabled(_ enabled: Bool, board: ChessBoard) {
+        physicsActive = enabled
+        endDrag(releaseVelocity: SCNVector3Zero)
+        if enabled {
+            colliderNode.position = SCNVector3(0, -0.125, 0)
+            let box = SCNBox(width: 10.3, height: 0.4, length: 10.3, chamferRadius: 0)
+            let body = SCNPhysicsBody(type: .static, shape: SCNPhysicsShape(geometry: box, options: nil))
+            body.friction = 0.72
+            body.restitution = 0.2
+            body.categoryBitMask = 1
+            body.collisionBitMask = 2
+            body.contactTestBitMask = 0
+            colliderNode.physicsBody = body
+        } else {
+            colliderNode.physicsBody = nil
+        }
+        rebuild(from: board)
+    }
+
+    private func attachPhysics(to node: SCNNode, code: Int8) {
+        let h = PieceBuilder.height(for: code)
+        let cyl = SCNCylinder(radius: 0.33, height: CGFloat(h))
+        let cylShape = SCNPhysicsShape(geometry: cyl, options: nil)
+        let offset = SCNMatrix4MakeTranslation(0, h * 0.5, 0)
+        let shape = SCNPhysicsShape(shapes: [cylShape], transforms: [NSValue(scnMatrix4: offset)])
+        let body = SCNPhysicsBody(type: .dynamic, shape: shape)
+        body.mass = 1.25
+        body.centerOfMassOffset = SCNVector3(0, h * 0.28, 0)
+        body.friction = 0.72
+        body.rollingFriction = 0.22
+        body.restitution = 0.22
+        body.damping = 0.16
+        body.angularDamping = 0.26
+        body.categoryBitMask = 2
+        body.collisionBitMask = 1 | 2
+        body.contactTestBitMask = 2
+        node.physicsBody = body
+    }
+
+    func beginDrag(square s: Int, atLocal: SCNVector3) -> Bool {
+        guard physicsActive, let node = pieceNodes[s], let body = node.physicsBody else { return false }
+        dragLock.lock()
+        draggedNode = node
+        dragTargetLocal = SCNVector3(atLocal.x, restY + 0.50, atLocal.z)
+        dragLock.unlock()
+        body.isAffectedByGravity = false
+        body.angularVelocityFactor = SCNVector3(0.25, 0.25, 0.25)
+        body.clearAllForces()
+        return true
+    }
+
+    func updateDrag(toLocal: SCNVector3) {
+        dragLock.lock()
+        dragTargetLocal = SCNVector3(toLocal.x, restY + 0.50, toLocal.z)
+        dragLock.unlock()
+    }
+
+    func endDrag(releaseVelocity: SCNVector3) {
+        dragLock.lock()
+        let node = draggedNode
+        draggedNode = nil
+        dragLock.unlock()
+        guard let n = node, let body = n.physicsBody else { return }
+        body.isAffectedByGravity = true
+        body.angularVelocityFactor = SCNVector3(1, 1, 1)
+        let vx = min(14, max(-14, releaseVelocity.x))
+        let vy = min(6, max(-6, releaseVelocity.y))
+        let vz = min(14, max(-14, releaseVelocity.z))
+        body.velocity = SCNVector3(vx, vy, vz)
+    }
+
+    func updateDraggedPiecePhysics() {
+        dragLock.lock()
+        let node = draggedNode
+        let targetLocal = dragTargetLocal
+        dragLock.unlock()
+        guard let n = node, let body = n.physicsBody else { return }
+        let targetWorld = root.convertPosition(targetLocal, to: nil)
+        let curWorld = n.presentation.worldPosition
+        let dx = targetWorld.x - curWorld.x
+        let dy = targetWorld.y - curWorld.y
+        let dz = targetWorld.z - curWorld.z
+        let vx = min(22, max(-22, dx * 18.0))
+        let vy = min(22, max(-22, dy * 18.0))
+        let vz = min(22, max(-22, dz * 18.0))
+        body.velocity = SCNVector3(vx, vy, vz)
+        let e = n.presentation.eulerAngles
+        let len = (e.x * e.x + e.z * e.z).squareRoot()
+        if len > 0.02 {
+            body.angularVelocity = SCNVector4(-e.x / len, 0, -e.z / len, len * 8.0)
+        } else {
+            body.angularVelocity = SCNVector4(0, 1, 0, 0)
+        }
+    }
+
+    func topplePiece(at square: Int, viewDir: SCNVector3) {
+        guard physicsActive, let n = pieceNodes[square], let body = n.physicsBody else { return }
+        let len = max(0.001, (viewDir.x * viewDir.x + viewDir.z * viewDir.z).squareRoot())
+        let dx = viewDir.x / len
+        let dz = viewDir.z / len
+        body.applyForce(SCNVector3(dx * 7.5, 2.2, dz * 7.5), at: SCNVector3(0, 0.85, 0), asImpulse: true)
+        body.applyTorque(SCNVector4(dz, 0.35, -dx, 3.2), asImpulse: true)
+    }
+
+    // MARK: Состояние
+
     func setFlipped(_ flipped: Bool) {
         let a: Float = flipped ? Float.pi : 0
         for c in labelContainers { c.eulerAngles.y = a }
@@ -1812,12 +2068,14 @@ final class BoardController {
 
     func reset(board: ChessBoard, flipped: Bool) {
         animationToken += 1
+        endDrag(releaseVelocity: SCNVector3Zero)
         for child in fxNode.childNodes { child.removeFromParentNode() }
         setFlipped(flipped)
         rebuild(from: board)
     }
 
     private func rebuild(from board: ChessBoard) {
+        endDrag(releaseVelocity: SCNVector3Zero)
         for n in piecesNode.childNodes where n.name != "fly" { n.removeFromParentNode() }
         pieceNodes.removeAll()
         liftedSquare = nil
@@ -1827,6 +2085,7 @@ final class BoardController {
             let n = PieceBuilder.node(for: code)
             n.name = "pc_\(s)"
             n.position = pos(s)
+            if physicsActive { attachPhysics(to: n, code: code) }
             piecesNode.addChildNode(n)
             pieceNodes[s] = n
         }
@@ -1861,6 +2120,7 @@ final class BoardController {
     }
 
     func setLift(_ s: Int?) {
+        if physicsActive { liftedSquare = nil; return }
         if let old = liftedSquare, old != s, let n = pieceNodes[old] {
             n.removeAllActions()
             n.runAction(SCNAction.move(to: pos(old), duration: 0.12))
@@ -1873,51 +2133,74 @@ final class BoardController {
         liftedSquare = s
     }
 
+    // MARK: Реалистичная чёрная дыра и спагеттификация фигуры
+
     func spawnBlackHole(at square: Int) {
         let p = pos(square)
         let bh = SCNNode()
-        bh.position = SCNVector3(p.x, restY + 0.015, p.z)
+        bh.position = SCNVector3(p.x, restY + 0.025, p.z)
         bh.scale = SCNVector3(0.01, 0.01, 0.01)
         fxNode.addChildNode(bh)
 
-        let voidSphere = SCNSphere(radius: 0.42)
-        voidSphere.segmentCount = 32
+        // 1. Горизонт событий с гравитационным фотонным кольцом на шейдере
+        let voidSphere = SCNSphere(radius: 0.44)
+        voidSphere.segmentCount = 36
         let voidMat = SCNMaterial()
         voidMat.lightingModel = .constant
         voidMat.diffuse.contents = UIColor.black
         voidMat.writesToDepthBuffer = true
+        voidMat.shaderModifiers = [
+            SCNShaderModifierEntryPoint.fragment:
+                "#pragma body\nfloat3 n = normalize(_surface.normal);\nfloat3 v = normalize(_surface.view);\nfloat ndv = saturate(abs(dot(n, v)));\nfloat photon = pow(1.0 - ndv, 4.2);\nfloat innerRim = smoothstep(0.18, 0.0, ndv);\n_output.color.rgb = float3(1.0, 0.72, 0.30) * photon * 2.8 + float3(0.85, 0.55, 1.0) * innerRim * 1.6;\n"
+        ]
         voidSphere.materials = [voidMat]
         let voidNode = SCNNode(geometry: voidSphere)
-        voidNode.scale = SCNVector3(1.0, 0.48, 1.0)
-        voidNode.position = SCNVector3(0, -0.02, 0)
+        voidNode.scale = SCNVector3(1.0, 0.56, 1.0)
+        voidNode.position = SCNVector3(0, -0.01, 0)
         voidNode.renderingOrder = 15
         voidNode.castsShadow = false
         bh.addChildNode(voidNode)
 
-        let funnel = SCNCone(topRadius: 0.52, bottomRadius: 0.02, height: 0.95)
-        funnel.radialSegmentCount = 32
+        // 2. Вертикальный эйнштейновский ореол гравитационного линзирования (как Гаргантюа)
+        let lensPlane = SCNPlane(width: 1.55, height: 1.55)
+        let lensMat = SCNMaterial()
+        lensMat.lightingModel = .constant
+        lensMat.diffuse.contents = TextureCache.blackholeRing ?? UIColor(red: 1.0, green: 0.75, blue: 0.4, alpha: 1)
+        lensMat.blendMode = .add
+        lensMat.writesToDepthBuffer = false
+        lensMat.isDoubleSided = true
+        lensPlane.materials = [lensMat]
+        let lensNode = SCNNode(geometry: lensPlane)
+        let bb = SCNBillboardConstraint()
+        bb.freeAxes = SCNBillboardAxis.Y
+        lensNode.constraints = [bb]
+        lensNode.position = SCNVector3(0, 0.06, 0)
+        lensNode.renderingOrder = 19
+        lensNode.castsShadow = false
+        bh.addChildNode(lensNode)
+
+        // 3. Гравитационная воронка, уходящая под доску
+        let funnel = SCNCone(topRadius: 0.56, bottomRadius: 0.02, height: 1.05)
+        funnel.radialSegmentCount = 36
         let funnelMat = SCNMaterial()
         funnelMat.lightingModel = .constant
-        funnelMat.diffuse.contents = UIColor(red: 0.38, green: 0.14, blue: 0.72, alpha: 0.85)
+        funnelMat.diffuse.contents = UIColor(red: 0.42, green: 0.16, blue: 0.85, alpha: 0.90)
         funnelMat.blendMode = .add
         funnelMat.writesToDepthBuffer = false
         funnelMat.isDoubleSided = true
         funnel.materials = [funnelMat]
         let funnelNode = SCNNode(geometry: funnel)
-        funnelNode.position = SCNVector3(0, -0.49, 0)
+        funnelNode.position = SCNVector3(0, -0.53, 0)
         funnelNode.renderingOrder = 14
         funnelNode.castsShadow = false
-        funnelNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 7.0, z: 0, duration: 1.0)))
+        funnelNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 9.0, z: 0, duration: 1.0)))
         bh.addChildNode(funnelNode)
 
-        let diskPlane = SCNPlane(width: 1.85, height: 1.85)
+        // 4. Двойной вращающийся аккреционный диск над клеткой
+        let diskPlane = SCNPlane(width: 2.05, height: 2.05)
         let diskMat = SCNMaterial()
         diskMat.lightingModel = .constant
-        if let img = TextureCache.blackholeDisk {
-            diskMat.diffuse.contents = img
-        } else {
-            diskMat.diffuse.contents = UIColor.orange
-        }
+        diskMat.diffuse.contents = TextureCache.blackholeDisk ?? UIColor.orange
         diskMat.blendMode = .add
         diskMat.writesToDepthBuffer = false
         diskMat.isDoubleSided = true
@@ -1927,41 +2210,64 @@ final class BoardController {
         diskNode.position = SCNVector3(0, 0.015, 0)
         diskNode.renderingOrder = 18
         diskNode.castsShadow = false
-        diskNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0, z: 8.5, duration: 1.0)))
+        diskNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0, z: 10.5, duration: 1.0)))
         bh.addChildNode(diskNode)
 
-        let ringPlane = SCNPlane(width: 1.45, height: 1.45)
-        let ringMat = SCNMaterial()
-        ringMat.lightingModel = .constant
-        if let rimg = TextureCache.blackholeRing {
-            ringMat.diffuse.contents = rimg
-        } else {
-            ringMat.diffuse.contents = UIColor(red: 0.85, green: 0.55, blue: 1.0, alpha: 1)
-        }
-        ringMat.blendMode = .add
-        ringMat.writesToDepthBuffer = false
-        ringMat.isDoubleSided = true
-        ringPlane.materials = [ringMat]
-
-        let ringTilt = SCNNode(geometry: ringPlane)
-        ringTilt.eulerAngles = SCNVector3(-Float.pi / 2 + 0.34, 0, 0)
-        ringTilt.position = SCNVector3(0, 0.04, 0)
-        ringTilt.renderingOrder = 19
-        ringTilt.castsShadow = false
-        ringTilt.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0, z: -6.0, duration: 1.0)))
-        bh.addChildNode(ringTilt)
+        let innerRing = SCNNode(geometry: lensPlane)
+        innerRing.eulerAngles = SCNVector3(-Float.pi / 2 + 0.25, 0, 0)
+        innerRing.scale = SCNVector3(0.95, 0.95, 0.95)
+        innerRing.position = SCNVector3(0, 0.045, 0)
+        innerRing.renderingOrder = 20
+        innerRing.castsShadow = false
+        innerRing.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0, z: -8.0, duration: 1.0)))
+        bh.addChildNode(innerRing)
 
         let underDisk = SCNNode(geometry: diskPlane)
         underDisk.eulerAngles.x = -Float.pi / 2
-        underDisk.position = SCNVector3(0, -0.58, 0)
+        underDisk.position = SCNVector3(0, -0.62, 0)
         underDisk.scale = SCNVector3(0.75, 0.75, 0.75)
         underDisk.renderingOrder = 16
         underDisk.castsShadow = false
-        underDisk.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0, z: -7.5, duration: 1.0)))
+        underDisk.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0, z: -8.5, duration: 1.0)))
         bh.addChildNode(underDisk)
 
+        // 5. Релятивистские полярные джеты и ударное кольцо
+        if let jetImg = TextureCache.beam {
+            let jetPlane = SCNPlane(width: 0.24, height: 1.8)
+            let jm = SCNMaterial()
+            jm.lightingModel = .constant
+            jm.diffuse.contents = jetImg
+            jm.blendMode = .add
+            jm.writesToDepthBuffer = false
+            jm.isDoubleSided = true
+            jetPlane.materials = [jm]
+            let jetUp = SCNNode(geometry: jetPlane)
+            jetUp.position = SCNVector3(0, 0.95, 0)
+            jetUp.opacity = 0.45
+            jetUp.renderingOrder = 17
+            jetUp.castsShadow = false
+            bh.addChildNode(jetUp)
+        }
+        if let swImg = TextureCache.shockwave {
+            let swPlane = SCNPlane(width: 1.2, height: 1.2)
+            let swm = SCNMaterial()
+            swm.lightingModel = .constant
+            swm.diffuse.contents = swImg
+            swm.blendMode = .add
+            swm.writesToDepthBuffer = false
+            swm.isDoubleSided = true
+            swPlane.materials = [swm]
+            let sw = SCNNode(geometry: swPlane)
+            sw.eulerAngles.x = -Float.pi / 2
+            sw.position = SCNVector3(0, 0.02, 0)
+            sw.scale = SCNVector3(0.3, 0.3, 0.3)
+            sw.renderingOrder = 17
+            sw.castsShadow = false
+            bh.addChildNode(sw)
+            sw.runAction(SCNAction.group([SCNAction.scale(to: 1.9, duration: 0.45), SCNAction.fadeOut(duration: 0.45)]))
+        }
         if let glowImg = TextureCache.glowWarm {
-            let gPlane = SCNPlane(width: 1.9, height: 1.9)
+            let gPlane = SCNPlane(width: 2.1, height: 2.1)
             let gMat = SCNMaterial()
             gMat.lightingModel = .constant
             gMat.diffuse.contents = glowImg
@@ -1972,43 +2278,44 @@ final class BoardController {
             let gNode = SCNNode(geometry: gPlane)
             gNode.eulerAngles.x = -Float.pi / 2
             gNode.position = SCNVector3(0, 0.008, 0)
-            gNode.opacity = 0.75
+            gNode.opacity = 0.85
             gNode.renderingOrder = 17
             gNode.castsShadow = false
             bh.addChildNode(gNode)
         }
 
+        // 6. Поток втягиваемой плазмы и искр
         let ps = SCNParticleSystem()
         ps.loops = false
-        ps.emissionDuration = 0.55
-        ps.birthRate = 220
-        ps.particleLifeSpan = 0.42
+        ps.emissionDuration = 0.62
+        ps.birthRate = 340
+        ps.particleLifeSpan = 0.44
         ps.particleLifeSpanVariation = 0.14
-        ps.emitterShape = SCNTorus(ringRadius: 0.72, pipeRadius: 0.08)
+        ps.emitterShape = SCNTorus(ringRadius: 0.82, pipeRadius: 0.10)
         ps.birthLocation = .surface
         ps.birthDirection = .surfaceNormal
-        ps.particleVelocity = -1.65
-        ps.particleVelocityVariation = 0.55
-        ps.acceleration = SCNVector3(0, -1.8, 0)
+        ps.particleVelocity = -1.95
+        ps.particleVelocityVariation = 0.65
+        ps.acceleration = SCNVector3(0, -2.2, 0)
         ps.particleSize = 0.055
         ps.particleSizeVariation = 0.03
-        ps.particleColor = UIColor(red: 1.0, green: 0.65, blue: 0.28, alpha: 1)
-        ps.particleColorVariation = SCNVector4(0.16, 0.25, 0.3, 0)
+        ps.particleColor = UIColor(red: 1.0, green: 0.72, blue: 0.32, alpha: 1)
+        ps.particleColorVariation = SCNVector4(0.18, 0.25, 0.30, 0)
         ps.blendMode = .additive
         ps.isLightingEnabled = false
         if let img = TextureCache.spark { ps.particleImage = img }
         let psHolder = SCNNode()
-        psHolder.position = SCNVector3(0, 0.18, 0)
+        psHolder.position = SCNVector3(0, 0.20, 0)
         psHolder.addParticleSystem(ps)
-        psHolder.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 10.0, z: 0, duration: 1.0)))
+        psHolder.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 12.0, z: 0, duration: 1.0)))
         bh.addChildNode(psHolder)
 
-        let open = SCNAction.scale(to: 1.0, duration: 0.18)
+        let open = SCNAction.scale(to: 1.0, duration: 0.16)
         open.timingMode = .easeOut
-        let hold = SCNAction.wait(duration: 0.46)
+        let hold = SCNAction.wait(duration: 0.56)
         let collapse = SCNAction.group([
-            SCNAction.scale(to: 0.01, duration: 0.22),
-            SCNAction.fadeOut(duration: 0.22)
+            SCNAction.scale(to: 0.01, duration: 0.24),
+            SCNAction.fadeOut(duration: 0.24)
         ])
         collapse.timingMode = .easeIn
         bh.runAction(SCNAction.sequence([open, hold, collapse, SCNAction.removeFromParentNode()]))
@@ -2058,6 +2365,7 @@ final class BoardController {
 
     func animate(move m: Move, before: ChessBoard, after: ChessBoard, completion: @escaping () -> Void) {
         liftedSquare = nil
+        endDrag(releaseVelocity: SCNVector3Zero)
         let token = animationToken
         var finished = false
         let finish: () -> Void = { [weak self] in
@@ -2073,6 +2381,7 @@ final class BoardController {
             return
         }
         pieceNodes[m.from] = nil
+        mover.physicsBody = nil
         mover.removeAllActions()
 
         var capSq = -1
@@ -2085,27 +2394,44 @@ final class BoardController {
         if capSq >= 0, let cap = pieceNodes[capSq] {
             pieceNodes[capSq] = nil
             cap.name = "fly"
+            cap.physicsBody = nil
             cap.removeAllActions()
             spawnBlackHole(at: capSq)
 
-            let tremor = SCNAction.sequence([
-                SCNAction.moveBy(x: 0.03, y: 0.04, z: -0.02, duration: 0.05),
-                SCNAction.moveBy(x: -0.05, y: 0.02, z: 0.04, duration: 0.05),
-                SCNAction.moveBy(x: 0.02, y: -0.02, z: -0.02, duration: 0.05)
-            ])
-            let suck = SCNAction.group([
-                SCNAction.moveBy(x: 0, y: -0.82, z: 0, duration: 0.40),
-                SCNAction.rotateBy(x: 0.25, y: 9.0, z: 0.2, duration: 0.40),
-                SCNAction.customAction(duration: 0.40) { node, elapsed in
-                    let t = Float(elapsed / 0.40)
-                    let xz = max(0.01, 1.0 - t * 0.96)
-                    let yStretch = 1.0 + t * 0.95 - (t * t) * 0.75
-                    node.scale = SCNVector3(xz, max(0.01, yStretch), xz)
-                },
-                SCNAction.fadeOut(duration: 0.40)
-            ])
-            suck.timingMode = .easeIn
-            cap.runAction(SCNAction.sequence([tremor, suck, SCNAction.removeFromParentNode()]))
+            // Плазменный отсвет распадающейся фигуры (не трогаем общие материалы шаблона)
+            let shroud = SCNNode(geometry: SCNSphere(radius: 0.35))
+            let sm = SCNMaterial()
+            sm.lightingModel = .constant
+            sm.diffuse.contents = UIColor(red: 1.0, green: 0.62, blue: 0.25, alpha: 0.55)
+            sm.blendMode = .add
+            sm.writesToDepthBuffer = false
+            shroud.geometry?.materials = [sm]
+            shroud.position = SCNVector3(0, 0.55, 0)
+            shroud.opacity = 0
+            shroud.castsShadow = false
+            cap.addChildNode(shroud)
+            shroud.runAction(SCNAction.sequence([SCNAction.wait(duration: 0.10), SCNAction.fadeOpacity(to: 0.85, duration: 0.25)]))
+
+            let startPos = pos(capSq)
+            let shockLift = SCNAction.move(to: SCNVector3(startPos.x, restY + 0.16, startPos.z), duration: 0.08)
+            shockLift.timingMode = .easeOut
+            let spaghettify = SCNAction.customAction(duration: 0.52) { node, elapsed in
+                let u = Float(elapsed / 0.52)
+                let accel = u * u
+                let spin = accel * 16.0
+                let radius = 0.09 * (1.0 - u) * sin(u * Float.pi)
+                let sx = max(0.02, 1.0 - 0.94 * pow(u, 1.15))
+                let sy = 1.0 + 2.35 * sin(u * Float.pi * 0.78) - 1.15 * accel
+                node.scale = SCNVector3(sx, max(0.03, sy), sx)
+                node.eulerAngles = SCNVector3(0.32 * u, spin, 0.22 * u)
+                node.position = SCNVector3(
+                    startPos.x + radius * cos(spin),
+                    restY + 0.16 - 1.08 * accel,
+                    startPos.z + radius * sin(spin)
+                )
+                node.opacity = CGFloat(max(0.0, 1.0 - pow(u, 2.2)))
+            }
+            cap.runAction(SCNAction.sequence([shockLift, spaghettify, SCNAction.removeFromParentNode()]))
         }
 
         let fromCol = m.from & 7
@@ -2116,6 +2442,7 @@ final class BoardController {
             let rookTo = base + (toCol == 6 ? 5 : 3)
             if let rook = pieceNodes[rookFrom] {
                 pieceNodes[rookFrom] = nil
+                rook.physicsBody = nil
                 rook.removeAllActions()
                 let rp = pos(rookTo)
                 let up = SCNAction.move(to: SCNVector3(rook.position.x, restY + 0.5, rook.position.z), duration: 0.12)
@@ -2127,7 +2454,7 @@ final class BoardController {
 
         let target = pos(m.to)
         let lift = SCNAction.move(to: SCNVector3(mover.position.x, restY + 0.72, mover.position.z), duration: 0.14)
-        let glide = SCNAction.move(to: SCNVector3(target.x, restY + 0.72, target.z), duration: hasCapture ? 0.34 : 0.28)
+        let glide = SCNAction.move(to: SCNVector3(target.x, restY + 0.72, target.z), duration: hasCapture ? 0.38 : 0.28)
         let drop = SCNAction.move(to: target, duration: 0.14)
         lift.timingMode = .easeOut
         glide.timingMode = .easeInEaseOut
@@ -2136,7 +2463,7 @@ final class BoardController {
             DispatchQueue.main.async { finish() }
         }
         mover.runAction(SCNAction.sequence([lift, glide, drop, done]))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { finish() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.9) { finish() }
     }
 }
 
@@ -2145,6 +2472,7 @@ final class SpaceScene {
     let boardMount = SCNNode()
     let orbit = SCNNode()
     private let pitch = SCNNode()
+    private let gyroNode = SCNNode()
     private let camNode = SCNNode()
     private let solarSystem = SCNNode()
     private let boardOrbitPivot = SCNNode()
@@ -2154,12 +2482,22 @@ final class SpaceScene {
     private let beltsNode = SCNNode()
     private let nebulaeNode = SCNNode()
     private let skySphereNode = SCNNode()
+    private let eventsNode = SCNNode()
     private var backLight: SCNLight? = nil
     private let baseCam = SCNVector3(0, 10.2, 10.4)
     private var zoom: Float = 1.0
 
+    private let motionMgr = CMMotionManager()
+    private var gyroEnabled = false
+    private var gyroRef: CMAttitude? = nil
+    private var lastEventTime: TimeInterval = 0
+    private var lastMeteorTime: TimeInterval = 0
+    private var currentQuality: GraphicsQuality = .ultra
+
     init() {
         scene.rootNode.addChildNode(solarSystem)
+        scene.physicsWorld.gravity = SCNVector3(0, -14.0, 0)
+        solarSystem.addChildNode(eventsNode)
         buildBackground()
         buildNebulae()
         buildStars()
@@ -2183,6 +2521,211 @@ final class SpaceScene {
         node.categoryBitMask = 2
         for c in node.childNodes { markSolarBody(c) }
     }
+
+    // MARK: Гироскоп и динамика камеры
+
+    func setGyroEnabled(_ enabled: Bool) {
+        gyroEnabled = enabled
+        gyroRef = nil
+        if enabled {
+            if motionMgr.isDeviceMotionAvailable {
+                motionMgr.deviceMotionUpdateInterval = 1.0 / 60.0
+                motionMgr.startDeviceMotionUpdates()
+            }
+        } else {
+            motionMgr.stopDeviceMotionUpdates()
+        }
+    }
+
+    func recalibrateGyro() {
+        gyroRef = motionMgr.deviceMotion?.attitude.copy() as? CMAttitude
+    }
+
+    func updateFrame(atTime time: TimeInterval) {
+        // Плавная отработка гироскопа
+        if gyroEnabled, let att = motionMgr.deviceMotion?.attitude {
+            if gyroRef == nil { gyroRef = att.copy() as? CMAttitude }
+            if let ref = gyroRef, let rel = att.copy() as? CMAttitude {
+                rel.multiply(byInverseOf: ref)
+                let targetPitch = Float(max(-0.26, min(0.26, rel.pitch * 0.45)))
+                let targetYaw = Float(max(-0.30, min(0.30, -rel.roll * 0.45)))
+                let cur = gyroNode.eulerAngles
+                gyroNode.eulerAngles = SCNVector3(
+                    cur.x + (targetPitch - cur.x) * 0.12,
+                    cur.y + (targetYaw - cur.y) * 0.12,
+                    0
+                )
+            }
+        } else {
+            let cur = gyroNode.eulerAngles
+            if abs(cur.x) > 0.001 || abs(cur.y) > 0.001 {
+                gyroNode.eulerAngles = SCNVector3(cur.x * 0.88, cur.y * 0.88, 0)
+            }
+        }
+
+        // Периодические столкновения и взрывы метеоритов + падающие звёзды
+        if lastEventTime == 0 {
+            lastEventTime = time - 3.5
+            lastMeteorTime = time - 1.5
+        }
+        if time - lastEventTime > 6.5 {
+            lastEventTime = time
+            DispatchQueue.main.async { [weak self] in self?.spawnMeteorCollision() }
+        }
+        if time - lastMeteorTime > 3.8 {
+            lastMeteorTime = time
+            DispatchQueue.main.async { [weak self] in self?.spawnShootingStar() }
+        }
+    }
+
+    func setOrbitalMotionPaused(_ paused: Bool) {
+        if paused {
+            boardOrbitPivot.removeAction(forKey: "boardOrbit")
+            boardMount.removeAction(forKey: "float")
+            boardMount.runAction(SCNAction.group([
+                SCNAction.move(to: SCNVector3Zero, duration: 0.2),
+                SCNAction.rotateTo(x: 0, y: 0, z: 0, duration: 0.2)
+            ]))
+        } else {
+            if boardOrbitPivot.action(forKey: "boardOrbit") == nil {
+                boardOrbitPivot.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: CGFloat(2 * Float.pi), z: 0, duration: 180)), forKey: "boardOrbit")
+            }
+            if boardMount.action(forKey: "float") == nil {
+                startBoardFloat()
+            }
+        }
+    }
+
+    // MARK: Взрывы метеоритов и падающие звёзды
+
+    private func spawnMeteorCollision() {
+        let ang = Float.random(in: 0...(2 * Float.pi))
+        let r = Float.random(in: 52...92)
+        let y = Float.random(in: -5...8)
+        let impact = SCNVector3(r * sin(ang), y, r * cos(ang))
+
+        let d1 = SCNVector3(Float.random(in: -14...14), Float.random(in: -6...6), Float.random(in: -14...14))
+        let d2 = SCNVector3(-d1.x * 0.9, -d1.y * 0.8, -d1.z * 0.9)
+
+        let rockGeo = asteroidGeometry(seed: Int.random(in: 1...20))
+        let m1 = SCNNode(geometry: rockGeo)
+        let m2 = SCNNode(geometry: rockGeo)
+        m1.scale = SCNVector3(0.45, 0.45, 0.45)
+        m2.scale = SCNVector3(0.38, 0.38, 0.38)
+        m1.position = SCNVector3(impact.x + d1.x, impact.y + d1.y, impact.z + d1.z)
+        m2.position = SCNVector3(impact.x + d2.x, impact.y + d2.y, impact.z + d2.z)
+        m1.castsShadow = false
+        m2.castsShadow = false
+        markSolarBody(m1)
+        markSolarBody(m2)
+        for m in [m1, m2] {
+            if let g = TextureCache.glowWarm {
+                let sp = sprite(g, 2.8, 2.8)
+                sp.opacity = 0.7
+                m.addChildNode(sp)
+            }
+            eventsNode.addChildNode(m)
+        }
+        m1.runAction(SCNAction.sequence([SCNAction.move(to: impact, duration: 0.95), SCNAction.removeFromParentNode()]))
+        m2.runAction(SCNAction.sequence([SCNAction.move(to: impact, duration: 0.95), SCNAction.removeFromParentNode()]))
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.95) { [weak self] in
+            guard let self = self else { return }
+            let expNode = SCNNode()
+            expNode.position = impact
+            self.eventsNode.addChildNode(expNode)
+
+            let flash = self.sprite(TextureCache.burst, 10.0, 10.0)
+            flash.scale = SCNVector3(0.2, 0.2, 0.2)
+            flash.runAction(SCNAction.sequence([
+                SCNAction.group([SCNAction.scale(to: 1.5, duration: 0.12), SCNAction.fadeIn(duration: 0.05)]),
+                SCNAction.group([SCNAction.scale(to: 0.2, duration: 0.45), SCNAction.fadeOut(duration: 0.45)])
+            ]))
+            expNode.addChildNode(flash)
+
+            let glow = self.sprite(TextureCache.glowWarm, 14.0, 14.0)
+            glow.runAction(SCNAction.sequence([
+                SCNAction.scale(to: 1.4, duration: 0.16),
+                SCNAction.fadeOut(duration: 0.65)
+            ]))
+            expNode.addChildNode(glow)
+
+            if self.currentQuality != .standard {
+                if let swImg = TextureCache.shockwave {
+                    let swp = SCNPlane(width: 11.0, height: 11.0)
+                    let swm = SCNMaterial()
+                    swm.lightingModel = .constant
+                    swm.diffuse.contents = swImg
+                    swm.blendMode = .add
+                    swm.writesToDepthBuffer = false
+                    swm.isDoubleSided = true
+                    swp.materials = [swm]
+                    let sw = SCNNode(geometry: swp)
+                    sw.eulerAngles = SCNVector3(Float.random(in: -0.8...0.8), Float.random(in: 0...3), 0)
+                    sw.scale = SCNVector3(0.08, 0.08, 0.08)
+                    sw.castsShadow = false
+                    sw.runAction(SCNAction.group([SCNAction.scale(to: 1.6, duration: 0.85), SCNAction.fadeOut(duration: 0.85)]))
+                    expNode.addChildNode(sw)
+                }
+
+                let ps = SCNParticleSystem()
+                ps.loops = false
+                ps.emissionDuration = 0.08
+                ps.birthRate = 2400
+                ps.particleLifeSpan = 1.6
+                ps.particleLifeSpanVariation = 0.6
+                ps.particleVelocity = 6.5
+                ps.particleVelocityVariation = 3.5
+                ps.birthLocation = .volume
+                ps.birthDirection = .random
+                ps.emitterShape = SCNSphere(radius: 0.35)
+                ps.particleSize = 0.24
+                ps.particleSizeVariation = 0.14
+                ps.particleColor = UIColor(red: 1.0, green: 0.72, blue: 0.25, alpha: 1)
+                ps.particleColorVariation = SCNVector4(0.14, 0.22, 0.30, 0)
+                ps.blendMode = .additive
+                ps.isLightingEnabled = false
+                if let spImg = TextureCache.spark { ps.particleImage = spImg }
+                expNode.addChildNode({ let p = SCNNode(); p.addParticleSystem(ps); return p }())
+
+                let shardGeo = self.asteroidGeometry(seed: 9)
+                for _ in 0..<7 {
+                    let sh = SCNNode(geometry: shardGeo)
+                    let sc = Float.random(in: 0.14...0.32)
+                    sh.scale = SCNVector3(sc, sc, sc)
+                    sh.castsShadow = false
+                    self.markSolarBody(sh)
+                    let v = SCNVector3(Float.random(in: -7...7), Float.random(in: -5...5), Float.random(in: -7...7))
+                    sh.runAction(SCNAction.group([
+                        SCNAction.move(by: v, duration: 2.2),
+                        SCNAction.rotateBy(x: 6, y: 8, z: 5, duration: 2.2),
+                        SCNAction.fadeOut(duration: 2.2)
+                    ]))
+                    expNode.addChildNode(sh)
+                }
+            }
+
+            expNode.runAction(SCNAction.sequence([SCNAction.wait(duration: 2.6), SCNAction.removeFromParentNode()]))
+        }
+    }
+
+    private func spawnShootingStar() {
+        let a = Float.random(in: 0...(2 * Float.pi))
+        let r: Float = Float.random(in: 120...175)
+        let y = Float.random(in: 5...55)
+        let start = SCNVector3(r * sin(a), y, r * cos(a))
+        let dir = SCNVector3(Float.random(in: -32...32), Float.random(in: -18 ... -5), Float.random(in: -32...32))
+        let meteor = sprite(TextureCache.streak, 6.5, 0.9)
+        meteor.position = start
+        meteor.look(at: SCNVector3(start.x + dir.x, start.y + dir.y, start.z + dir.z))
+        eventsNode.addChildNode(meteor)
+        meteor.runAction(SCNAction.sequence([
+            SCNAction.group([SCNAction.move(by: dir, duration: 1.1), SCNAction.fadeOut(duration: 1.1)]),
+            SCNAction.removeFromParentNode()
+        ]))
+    }
+
+    // MARK: Фон, туманности и звёзды
 
     static func fallbackEnvironment() -> UIImage {
         let size = CGSize(width: 256, height: 128)
@@ -2221,17 +2764,20 @@ final class SpaceScene {
         } else {
             scene.lightingEnvironment.contents = SpaceScene.fallbackEnvironment()
         }
-        scene.lightingEnvironment.intensity = 1.25
+        scene.lightingEnvironment.intensity = 1.45
     }
 
     private func buildNebulae() {
-        let imgs = [TextureCache.nebulaCyan, TextureCache.nebulaPurple, TextureCache.nebulaGold].compactMap { $0 }
+        let imgs = [
+            TextureCache.nebulaCyan, TextureCache.nebulaPurple,
+            TextureCache.nebulaGold, TextureCache.nebulaEmerald, TextureCache.nebulaCrimson
+        ].compactMap { $0 }
         guard !imgs.isEmpty else { return }
-        for i in 0..<18 {
-            let az = Float(i) * (2 * Float.pi / 18.0) + Float.random(in: -0.15...0.15)
-            let el = Float.random(in: -0.45...0.65)
-            let dist = Float.random(in: 205...258)
-            let size = CGFloat(Float.random(in: 85...155))
+        for i in 0..<32 {
+            let az = Float(i) * (2 * Float.pi / 32.0) + Float.random(in: -0.18...0.18)
+            let el = Float.random(in: -0.55...0.72)
+            let dist = Float.random(in: 196...268)
+            let size = CGFloat(Float.random(in: 80...168))
             let plane = SCNPlane(width: size, height: size)
             let m = SCNMaterial()
             m.lightingModel = .constant
@@ -2244,11 +2790,17 @@ final class SpaceScene {
             n.position = SCNVector3(dist * cos(el) * sin(az), dist * sin(el), -dist * cos(el) * cos(az))
             n.look(at: SCNVector3Zero)
             n.eulerAngles.z = Float.random(in: 0...(2 * Float.pi))
-            n.opacity = CGFloat(Float.random(in: 0.30...0.52))
+            let baseOp = CGFloat(Float.random(in: 0.28...0.52))
+            n.opacity = baseOp
             n.renderingOrder = -90
             n.castsShadow = false
             let rot = SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0, z: CGFloat(i % 2 == 0 ? 0.08 : -0.07), duration: 20))
+            let pulse = SCNAction.repeatForever(SCNAction.sequence([
+                SCNAction.fadeOpacity(to: baseOp * 1.28, duration: Double.random(in: 4...7)),
+                SCNAction.fadeOpacity(to: baseOp * 0.78, duration: Double.random(in: 4...7))
+            ]))
             n.runAction(rot)
+            n.runAction(pulse)
             nebulaeNode.addChildNode(n)
         }
         nebulaeNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.09, z: 0, duration: 30)))
@@ -2273,7 +2825,7 @@ final class SpaceScene {
             geos.append(g)
         }
         let stars = SCNNode()
-        for i in 0..<1400 {
+        for i in 0..<1500 {
             var x: Float = 0
             var y: Float = 0
             var z: Float = 0
@@ -2295,7 +2847,7 @@ final class SpaceScene {
             n.castsShadow = false
             stars.addChildNode(n)
         }
-        for _ in 0..<34 {
+        for _ in 0..<36 {
             let a = Float.random(in: 0...(2 * Float.pi))
             let e = Float.random(in: -0.9...1.0)
             let d: Float = Float.random(in: 205...255)
@@ -2326,6 +2878,8 @@ final class SpaceScene {
         return n
     }
 
+    // MARK: Солнце и планеты
+
     private func buildSun() {
         let sun = SCNSphere(radius: 4.0)
         sun.segmentCount = 64
@@ -2338,7 +2892,11 @@ final class SpaceScene {
             sm.diffuse.contents = UIColor(red: 1.0, green: 0.75, blue: 0.25, alpha: 1)
             sm.emission.contents = UIColor(red: 1.0, green: 0.65, blue: 0.15, alpha: 1)
         }
-        sm.emission.intensity = 2.4
+        sm.emission.intensity = 2.6
+        sm.shaderModifiers = [
+            SCNShaderModifierEntryPoint.fragment:
+                "#pragma body\nfloat2 uv = _surface.diffuseTexcoord;\nfloat t = u_time * 0.45;\nfloat n1 = sin(uv.x * 26.0 + t * 2.1) * cos(uv.y * 18.0 - t * 1.6);\nfloat n2 = sin((uv.x + uv.y) * 42.0 - t * 3.0) * cos((uv.x - uv.y) * 35.0 + t * 2.4);\nfloat flare = saturate(0.5 + 0.32 * n1 + 0.22 * n2);\nfloat3 n = normalize(_surface.normal);\nfloat3 v = normalize(_surface.view);\nfloat rim = pow(1.0 - saturate(abs(dot(n, v))), 2.2);\n_output.color.rgb *= (0.88 + 0.38 * flare);\n_output.color.rgb += float3(1.0, 0.52, 0.14) * rim * 1.45;\n"
+        ]
         sun.materials = [sm]
         let sunNode = SCNNode(geometry: sun)
         sunNode.position = SCNVector3Zero
@@ -2346,18 +2904,20 @@ final class SpaceScene {
         sunNode.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: 0.35, z: 0, duration: 15)))
         solarSystem.addChildNode(sunNode)
 
-        let corona = sprite(TextureCache.glowWarm, 40, 40)
+        let corona = sprite(TextureCache.glowWarm, 42, 42)
         corona.opacity = 0.95
         corona.runAction(SCNAction.repeatForever(SCNAction.sequence([
             SCNAction.scale(to: 1.07, duration: 3.0),
             SCNAction.scale(to: 0.94, duration: 3.4)
         ])))
-        let core = sprite(TextureCache.glow, 17, 17)
-        let flare = sprite(TextureCache.streak, 78, 9.5)
-        flare.opacity = 0.8
-        let star = sprite(TextureCache.burst, 38, 38)
-        star.opacity = 0.7
-        for n in [corona, core, flare, star] { sunNode.addChildNode(n) }
+        let core = sprite(TextureCache.glow, 18, 18)
+        let flare = sprite(TextureCache.streak, 82, 9.5)
+        flare.opacity = 0.85
+        let star = sprite(TextureCache.burst, 40, 40)
+        star.opacity = 0.72
+        let optRing = sprite(TextureCache.flareRing, 24, 24)
+        optRing.opacity = 0.35
+        for n in [corona, core, flare, star, optRing] { sunNode.addChildNode(n) }
 
         let solarLight = SCNLight()
         solarLight.type = .omni
@@ -2373,7 +2933,7 @@ final class SpaceScene {
         solarSystem.addChildNode(slNode)
     }
 
-    private func planetNode(radius: CGFloat, image: UIImage?, normal: UIImage?, fallback: UIColor, roughness: CGFloat = 0.85) -> SCNNode {
+    private func planetNode(radius: CGFloat, image: UIImage?, normal: UIImage?, fallback: UIColor, roughness: CGFloat = 0.85, limbTint: (Float, Float, Float)? = nil) -> SCNNode {
         let sphere = SCNSphere(radius: radius)
         sphere.segmentCount = 48
         let m = SCNMaterial()
@@ -2385,6 +2945,12 @@ final class SpaceScene {
         }
         m.roughness.contents = roughness
         m.metalness.contents = 0.0
+        if let lt = limbTint {
+            m.shaderModifiers = [
+                SCNShaderModifierEntryPoint.fragment:
+                    "#pragma body\nfloat3 n = normalize(_surface.normal);\nfloat3 v = normalize(_surface.view);\nfloat rim = pow(1.0 - saturate(abs(dot(n, v))), 3.2);\n_output.color.rgb += float3(\(lt.0), \(lt.1), \(lt.2)) * rim * 0.45;\n"
+            ]
+        }
         sphere.materials = [m]
         let n = SCNNode(geometry: sphere)
         n.castsShadow = false
@@ -2447,22 +3013,19 @@ final class SpaceScene {
     }
 
     private func buildPlanets() {
-        // 1. Меркурий
         addOrbitBody(distance: 10.5, orbitPeriod: 24, startAngleDeg: 148, inclinationDeg: 7.0, axialTiltDeg: 0.03, spinPeriod: 36) { spin in
             spin.addChildNode(planetNode(radius: 0.55, image: TextureCache.mercury, normal: TextureCache.mercuryNormal, fallback: .gray, roughness: 0.92))
         }
 
-        // 2. Венера (ретроградное вращение)
         let venus = addOrbitBody(distance: 16.5, orbitPeriod: 38, startAngleDeg: 212, inclinationDeg: 3.4, axialTiltDeg: 177.4, spinPeriod: 44, retrograde: true) { spin in
-            spin.addChildNode(planetNode(radius: 0.95, image: TextureCache.venus, normal: nil, fallback: .systemYellow, roughness: 0.7))
+            spin.addChildNode(planetNode(radius: 0.95, image: TextureCache.venus, normal: nil, fallback: .systemYellow, roughness: 0.65, limbTint: (1.0, 0.85, 0.45)))
         }
         let vHalo = sprite(TextureCache.haloWarm, 2.5, 2.5)
         vHalo.opacity = 0.45
         venus.holder.addChildNode(vHalo)
 
-        // 3. Земля + Луна
         let earth = addOrbitBody(distance: 25.0, orbitPeriod: 60, startAngleDeg: 166, inclinationDeg: 0, axialTiltDeg: 23.4, spinPeriod: 22) { spin in
-            spin.addChildNode(planetNode(radius: 1.85, image: TextureCache.earth, normal: nil, fallback: .systemBlue, roughness: 0.75))
+            spin.addChildNode(planetNode(radius: 1.85, image: TextureCache.earth, normal: nil, fallback: .systemBlue, roughness: 0.55, limbTint: (0.35, 0.65, 1.0)))
             if let clouds = TextureCache.earthClouds {
                 let cs = SCNSphere(radius: 1.88)
                 cs.segmentCount = 48
@@ -2498,9 +3061,8 @@ final class SpaceScene {
         earth.holder.addChildNode(atmoNode)
         addMoon(to: earth.holder, radius: 0.48, distance: 3.8, orbitPeriod: 11, startAngleDeg: 40, inclinationDeg: 5.1, image: TextureCache.moon, normal: TextureCache.moonNormal, fallback: .lightGray)
 
-        // 4. Марс + Фобос и Деймос
         let mars = addOrbitBody(distance: 34.0, orbitPeriod: 84, startAngleDeg: 204, inclinationDeg: 1.85, axialTiltDeg: 25.2, spinPeriod: 23) { spin in
-            spin.addChildNode(planetNode(radius: 1.15, image: TextureCache.mars, normal: TextureCache.marsNormal, fallback: .systemRed, roughness: 0.88))
+            spin.addChildNode(planetNode(radius: 1.15, image: TextureCache.mars, normal: TextureCache.marsNormal, fallback: .systemRed, roughness: 0.88, limbTint: (1.0, 0.52, 0.28)))
         }
         let mHalo = sprite(TextureCache.haloWarm, 3.1, 3.1)
         mHalo.opacity = 0.55
@@ -2508,9 +3070,8 @@ final class SpaceScene {
         addMoon(to: mars.axial, radius: 0.14, distance: 2.0, orbitPeriod: 4.2, startAngleDeg: 15, image: TextureCache.asteroid, normal: TextureCache.asteroidNormal, fallback: .brown)
         addMoon(to: mars.axial, radius: 0.10, distance: 2.8, orbitPeriod: 8.4, startAngleDeg: 185, image: TextureCache.asteroid, normal: TextureCache.asteroidNormal, fallback: .gray)
 
-        // 5. Юпитер + пылевое кольцо + Ио, Европа, Ганимед, Каллисто
         let jupiter = addOrbitBody(distance: 82.0, orbitPeriod: 140, startAngleDeg: 167, inclinationDeg: 1.3, axialTiltDeg: 3.1, spinPeriod: 10) { spin in
-            spin.addChildNode(planetNode(radius: 4.5, image: TextureCache.jupiter, normal: nil, fallback: UIColor(red: 0.85, green: 0.68, blue: 0.48, alpha: 1), roughness: 0.70))
+            spin.addChildNode(planetNode(radius: 4.5, image: TextureCache.jupiter, normal: nil, fallback: UIColor(red: 0.85, green: 0.68, blue: 0.48, alpha: 1), roughness: 0.65, limbTint: (1.0, 0.78, 0.55)))
         }
         let jRing = SCNTorus(ringRadius: 6.2, pipeRadius: 0.08)
         jRing.ringSegmentCount = 64
@@ -2528,18 +3089,13 @@ final class SpaceScene {
         addMoon(to: jupiter.axial, radius: 0.48, distance: 10.4, orbitPeriod: 14.0, startAngleDeg: 250, image: TextureCache.moon, normal: TextureCache.moonNormal, fallback: UIColor(red: 0.64, green: 0.58, blue: 0.52, alpha: 1))
         addMoon(to: jupiter.axial, radius: 0.43, distance: 12.6, orbitPeriod: 20.0, startAngleDeg: 310, image: TextureCache.asteroid, normal: TextureCache.asteroidNormal, fallback: UIColor(red: 0.44, green: 0.40, blue: 0.38, alpha: 1))
 
-        // 6. Сатурн + кольца + Мимас, Энцелад, Титан
         let saturn = addOrbitBody(distance: 106.0, orbitPeriod: 190, startAngleDeg: 194, inclinationDeg: 2.5, axialTiltDeg: 26.7, spinPeriod: 11) { spin in
-            spin.addChildNode(planetNode(radius: 3.8, image: TextureCache.saturn, normal: nil, fallback: UIColor(red: 0.82, green: 0.68, blue: 0.5, alpha: 1), roughness: 0.75))
+            spin.addChildNode(planetNode(radius: 3.8, image: TextureCache.saturn, normal: nil, fallback: UIColor(red: 0.82, green: 0.68, blue: 0.5, alpha: 1), roughness: 0.72, limbTint: (1.0, 0.85, 0.60)))
         }
         let sRing = SCNPlane(width: 17.0, height: 17.0)
         let srm = SCNMaterial()
         srm.lightingModel = .constant
-        if let rimg = TextureCache.saturnRing {
-            srm.diffuse.contents = rimg
-        } else {
-            srm.diffuse.contents = UIColor(red: 0.88, green: 0.78, blue: 0.60, alpha: 0.6)
-        }
+        srm.diffuse.contents = TextureCache.saturnRing ?? UIColor(red: 0.88, green: 0.78, blue: 0.60, alpha: 0.6)
         srm.isDoubleSided = true
         sRing.materials = [srm]
         let sRingNode = SCNNode(geometry: sRing)
@@ -2551,18 +3107,13 @@ final class SpaceScene {
         addMoon(to: saturn.axial, radius: 0.20, distance: 10.6, orbitPeriod: 9.0, startAngleDeg: 175, image: nil, normal: TextureCache.moonNormal, fallback: UIColor(red: 0.92, green: 0.96, blue: 1.0, alpha: 1))
         addMoon(to: saturn.axial, radius: 0.50, distance: 13.0, orbitPeriod: 15.0, startAngleDeg: 290, image: nil, normal: nil, fallback: UIColor(red: 0.90, green: 0.68, blue: 0.34, alpha: 1))
 
-        // 7. Уран (лёжа на боку 97.8°) + кольца + Титания и Оберон
         let uranus = addOrbitBody(distance: 130.0, orbitPeriod: 240, startAngleDeg: 172, inclinationDeg: 0.8, axialTiltDeg: 97.8, spinPeriod: 15, retrograde: true) { spin in
-            spin.addChildNode(planetNode(radius: 2.5, image: TextureCache.uranus, normal: nil, fallback: .cyan, roughness: 0.72))
+            spin.addChildNode(planetNode(radius: 2.5, image: TextureCache.uranus, normal: nil, fallback: .cyan, roughness: 0.68, limbTint: (0.55, 0.95, 1.0)))
         }
         let uRing = SCNPlane(width: 10.5, height: 10.5)
         let urm = SCNMaterial()
         urm.lightingModel = .constant
-        if let uimg = TextureCache.uranusRing {
-            urm.diffuse.contents = uimg
-        } else {
-            urm.diffuse.contents = UIColor(red: 0.65, green: 0.88, blue: 0.95, alpha: 0.4)
-        }
+        urm.diffuse.contents = TextureCache.uranusRing ?? UIColor(red: 0.65, green: 0.88, blue: 0.95, alpha: 0.4)
         urm.isDoubleSided = true
         uRing.materials = [urm]
         let uRingNode = SCNNode(geometry: uRing)
@@ -2572,16 +3123,14 @@ final class SpaceScene {
         addMoon(to: uranus.axial, radius: 0.24, distance: 6.2, orbitPeriod: 8.0, startAngleDeg: 60, image: TextureCache.moon, normal: TextureCache.moonNormal, fallback: .lightGray)
         addMoon(to: uranus.axial, radius: 0.22, distance: 7.6, orbitPeriod: 11.5, startAngleDeg: 210, image: TextureCache.moon, normal: TextureCache.moonNormal, fallback: .gray)
 
-        // 8. Нептун + ретроградный Тритон
         let neptune = addOrbitBody(distance: 152.0, orbitPeriod: 300, startAngleDeg: 188, inclinationDeg: 1.8, axialTiltDeg: 28.3, spinPeriod: 14) { spin in
-            spin.addChildNode(planetNode(radius: 2.4, image: TextureCache.neptune, normal: nil, fallback: .systemBlue, roughness: 0.70))
+            spin.addChildNode(planetNode(radius: 2.4, image: TextureCache.neptune, normal: nil, fallback: .systemBlue, roughness: 0.65, limbTint: (0.35, 0.65, 1.0)))
         }
         let nHalo = sprite(TextureCache.halo, 6.2, 6.2)
         nHalo.opacity = 0.55
         neptune.holder.addChildNode(nHalo)
         addMoon(to: neptune.axial, radius: 0.34, distance: 5.4, orbitPeriod: 9.0, startAngleDeg: 120, inclinationDeg: 23.0, retrograde: true, image: TextureCache.moon, normal: TextureCache.moonNormal, fallback: UIColor(red: 0.85, green: 0.80, blue: 0.82, alpha: 1))
 
-        // 9. Плутон + Харон
         let pluto = addOrbitBody(distance: 168.0, orbitPeriod: 360, startAngleDeg: 177, inclinationDeg: 9.0, axialTiltDeg: 122.5, spinPeriod: 28, retrograde: true) { spin in
             spin.addChildNode(planetNode(radius: 0.82, image: TextureCache.pluto, normal: nil, fallback: UIColor(red: 0.78, green: 0.65, blue: 0.55, alpha: 1), roughness: 0.90))
         }
@@ -2626,18 +3175,9 @@ final class SpaceScene {
         }
         let m = SCNMaterial()
         m.lightingModel = .physicallyBased
-        if let img = TextureCache.asteroid {
-            m.diffuse.contents = img
-        } else {
-            m.diffuse.contents = UIColor(white: 0.48, alpha: 1)
-        }
-        if icy {
-            m.multiply.contents = UIColor(red: 0.72, green: 0.86, blue: 1.0, alpha: 1)
-        }
-        if let nm = TextureCache.asteroidNormal {
-            m.normal.contents = nm
-            m.normal.intensity = 1.2
-        }
+        m.diffuse.contents = TextureCache.asteroid ?? UIColor(white: 0.48, alpha: 1)
+        if icy { m.multiply.contents = UIColor(red: 0.72, green: 0.86, blue: 1.0, alpha: 1) }
+        if let nm = TextureCache.asteroidNormal { m.normal.contents = nm; m.normal.intensity = 1.2 }
         m.roughness.contents = icy ? 0.68 : 0.92
         m.metalness.contents = icy ? 0.05 : 0.12
         let geo = SCNGeometry(
@@ -2690,7 +3230,6 @@ final class SpaceScene {
         buildBeltRing(geos: geos, count: 85, heroCount: 16, rMin: 58, rMax: 63, ySpread: 2.8, sMin: 0.18, sMax: 0.56, orbitPeriod: 126)
         buildBeltRing(geos: geos, count: 70, heroCount: 13, rMin: 63, rMax: 68, ySpread: 3.2, sMin: 0.16, sMax: 0.48, orbitPeriod: 142)
 
-        // Карликовая планета Церера в главном поясе астероидов
         addOrbitBody(distance: 60.5, orbitPeriod: 118, startAngleDeg: 183, inclinationDeg: 6.5, axialTiltDeg: 4.0, spinPeriod: 16) { spin in
             spin.addChildNode(planetNode(radius: 0.54, image: TextureCache.moon, normal: TextureCache.moonNormal, fallback: .gray, roughness: 0.92))
         }
@@ -2744,7 +3283,7 @@ final class SpaceScene {
     }
 
     private func buildBoardRig() {
-        boardOrbitPivot.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: CGFloat(2 * Float.pi), z: 0, duration: 180)))
+        boardOrbitPivot.runAction(SCNAction.repeatForever(SCNAction.rotateBy(x: 0, y: CGFloat(2 * Float.pi), z: 0, duration: 180)), forKey: "boardOrbit")
         solarSystem.addChildNode(boardOrbitPivot)
         boardAnchor.position = SCNVector3(0, 8.4, 44.0)
         boardOrbitPivot.addChildNode(boardAnchor)
@@ -2782,7 +3321,7 @@ final class SpaceScene {
                 spin.addChildNode(pn)
                 holder.addChildNode(spin)
             }
-            let base = CGFloat(Float.random(in: 0.12...0.26))
+            let base = CGFloat(Float.random(in: 0.14...0.30))
             holder.opacity = base
             let up = SCNAction.fadeOpacity(to: base * 1.5, duration: Double.random(in: 2.5...5.0))
             let down = SCNAction.fadeOpacity(to: base * 0.55, duration: Double.random(in: 2.5...5.0))
@@ -2795,7 +3334,7 @@ final class SpaceScene {
     private func buildDust() {
         let ps = SCNParticleSystem()
         ps.loops = true
-        ps.birthRate = 14
+        ps.birthRate = 16
         ps.warmupDuration = 10
         ps.particleLifeSpan = 14
         ps.particleLifeSpanVariation = 4
@@ -2807,7 +3346,7 @@ final class SpaceScene {
         ps.acceleration = SCNVector3(0.01, 0.015, 0)
         ps.particleSize = 0.07
         ps.particleSizeVariation = 0.05
-        ps.particleColor = UIColor(red: 1.0, green: 0.9, blue: 0.75, alpha: 0.6)
+        ps.particleColor = UIColor(red: 1.0, green: 0.9, blue: 0.75, alpha: 0.65)
         ps.blendMode = .additive
         ps.isLightingEnabled = false
         if let img = TextureCache.dust { ps.particleImage = img }
@@ -2842,14 +3381,15 @@ final class SpaceScene {
         camNode.camera = cam
         camNode.position = baseCam
         camNode.look(at: SCNVector3(0, 1.35, -1.5))
-        pitch.addChildNode(camNode)
+        gyroNode.addChildNode(camNode)
+        pitch.addChildNode(gyroNode)
         orbit.addChildNode(pitch)
         boardAnchor.addChildNode(orbit)
 
         let back = SCNLight()
         back.type = .directional
-        back.intensity = 1500
-        back.color = UIColor(red: 1.0, green: 0.82, blue: 0.6, alpha: 1)
+        back.intensity = 1550
+        back.color = UIColor(red: 1.0, green: 0.83, blue: 0.62, alpha: 1)
         back.castsShadow = true
         back.shadowMode = .deferred
         back.shadowRadius = 3.5
@@ -2866,8 +3406,8 @@ final class SpaceScene {
 
         let key = SCNLight()
         key.type = .spot
-        key.intensity = 1000
-        key.color = UIColor(red: 1.0, green: 0.96, blue: 0.9, alpha: 1)
+        key.intensity = 1050
+        key.color = UIColor(red: 1.0, green: 0.96, blue: 0.90, alpha: 1)
         key.spotInnerAngle = 25
         key.spotOuterAngle = 80
         key.categoryBitMask = 1
@@ -2879,8 +3419,8 @@ final class SpaceScene {
 
         let fill = SCNLight()
         fill.type = .directional
-        fill.intensity = 300
-        fill.color = UIColor(red: 0.55, green: 0.68, blue: 1.0, alpha: 1)
+        fill.intensity = 320
+        fill.color = UIColor(red: 0.55, green: 0.70, blue: 1.0, alpha: 1)
         fill.categoryBitMask = 1
         let fn = SCNNode()
         fn.light = fill
@@ -2890,8 +3430,8 @@ final class SpaceScene {
 
         let under = SCNLight()
         under.type = .directional
-        under.intensity = 240
-        under.color = UIColor(red: 0.42, green: 0.58, blue: 0.95, alpha: 1)
+        under.intensity = 260
+        under.color = UIColor(red: 0.42, green: 0.60, blue: 0.98, alpha: 1)
         under.categoryBitMask = 1
         let un = SCNNode()
         un.light = under
@@ -2901,22 +3441,26 @@ final class SpaceScene {
 
         let amb = SCNLight()
         amb.type = .ambient
-        amb.intensity = 120
-        amb.color = UIColor(red: 0.7, green: 0.75, blue: 1.0, alpha: 1)
+        amb.intensity = 130
+        amb.color = UIColor(red: 0.72, green: 0.78, blue: 1.0, alpha: 1)
         let an = SCNNode()
         an.light = amb
         scene.rootNode.addChildNode(an)
     }
 
     func applyQuality(_ q: GraphicsQuality) {
+        currentQuality = q
         guard let cam = camNode.camera else { return }
         switch q {
         case .standard:
             cam.wantsHDR = false
+            cam.wantsExposureAdaptation = false
             cam.bloomIntensity = 0
             cam.saturation = 1.0
             cam.contrast = 0.0
             cam.screenSpaceAmbientOcclusionIntensity = 0
+            cam.wantsDepthOfField = false
+            cam.motionBlurIntensity = 0
             cam.vignettingIntensity = 0
             cam.grainIntensity = 0
             cam.colorFringeStrength = 0
@@ -2926,7 +3470,10 @@ final class SpaceScene {
             dustNode.isHidden = true
         case .high:
             configureFilmLook(cam)
-            cam.screenSpaceAmbientOcclusionIntensity = 0
+            cam.screenSpaceAmbientOcclusionIntensity = 0.35
+            cam.screenSpaceAmbientOcclusionRadius = 0.45
+            cam.wantsDepthOfField = false
+            cam.motionBlurIntensity = 0
             cam.grainIntensity = 0
             cam.colorFringeStrength = 0
             backLight?.shadowMapSize = CGSize(width: 2048, height: 2048)
@@ -2935,14 +3482,19 @@ final class SpaceScene {
             dustNode.isHidden = false
         case .ultra:
             configureFilmLook(cam)
-            cam.screenSpaceAmbientOcclusionIntensity = 0.8
-            cam.screenSpaceAmbientOcclusionRadius = 0.5
-            cam.screenSpaceAmbientOcclusionBias = 0.03
-            cam.screenSpaceAmbientOcclusionDepthThreshold = 0.2
-            cam.screenSpaceAmbientOcclusionNormalThreshold = 0.3
-            cam.grainIntensity = 0.1
-            cam.grainScale = 1.5
-            cam.colorFringeStrength = 1.0
+            cam.screenSpaceAmbientOcclusionIntensity = 0.92
+            cam.screenSpaceAmbientOcclusionRadius = 0.55
+            cam.screenSpaceAmbientOcclusionBias = 0.025
+            cam.screenSpaceAmbientOcclusionDepthThreshold = 0.18
+            cam.screenSpaceAmbientOcclusionNormalThreshold = 0.25
+            cam.wantsDepthOfField = true
+            cam.focusDistance = 13.8 * CGFloat(zoom)
+            cam.fStop = 7.4
+            cam.apertureBladeCount = 7
+            cam.motionBlurIntensity = 0.18
+            cam.grainIntensity = 0.08
+            cam.grainScale = 1.4
+            cam.colorFringeStrength = 0.85
             backLight?.shadowMapSize = CGSize(width: 4096, height: 4096)
             backLight?.shadowSampleCount = 16
             beamsNode.isHidden = false
@@ -2952,13 +3504,18 @@ final class SpaceScene {
 
     private func configureFilmLook(_ cam: SCNCamera) {
         cam.wantsHDR = true
-        cam.bloomIntensity = 0.9
-        cam.bloomThreshold = 1.05
-        cam.bloomBlurRadius = 10
-        cam.vignettingIntensity = 0.55
-        cam.vignettingPower = 1.2
-        cam.saturation = 1.08
-        cam.contrast = 0.06
+        cam.wantsExposureAdaptation = true
+        cam.exposureOffset = 0.08
+        cam.minimumExposure = -0.8
+        cam.maximumExposure = 1.8
+        cam.bloomIntensity = 1.1
+        cam.bloomThreshold = 0.96
+        cam.bloomBlurRadius = 13
+        cam.bloomIterationCount = 2
+        cam.vignettingIntensity = 0.50
+        cam.vignettingPower = 1.25
+        cam.saturation = 1.12
+        cam.contrast = 0.08
     }
 
     func startMenuOrbit() {
@@ -2972,6 +3529,7 @@ final class SpaceScene {
         pitch.eulerAngles.x = 0
         zoom = 1.0
         camNode.position = baseCam
+        camNode.camera?.focusDistance = 13.8
         let target: CGFloat = flipped ? CGFloat.pi : 0
         orbit.runAction(SCNAction.rotateTo(x: 0, y: target, z: 0, duration: 0.9, usesShortestUnitArc: true), forKey: "focus")
     }
@@ -2987,6 +3545,7 @@ final class SpaceScene {
         if scale <= 0 { return }
         zoom = min(1.5, max(0.55, zoom / Float(scale)))
         camNode.position = SCNVector3(baseCam.x * zoom, baseCam.y * zoom, baseCam.z * zoom)
+        camNode.camera?.focusDistance = 13.8 * CGFloat(zoom)
     }
 }
 
@@ -2998,12 +3557,20 @@ struct Chess3DContainer: UIViewRepresentable {
         view.scene = gm.space.scene
         view.pointOfView = gm.space.cameraNode
         view.antialiasingMode = .multisampling4X
+        view.isTemporalAntialiasingEnabled = true
         view.rendersContinuously = true
         view.backgroundColor = UIColor.black
+        view.delegate = context.coordinator
+        gm.space.scene.physicsWorld.contactDelegate = context.coordinator
         gm.attachBoardToSpace()
+
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+        let dblTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleDoubleTap(_:)))
+        dblTap.numberOfTapsRequired = 2
+        tap.require(toFail: dblTap)
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
+        view.addGestureRecognizer(dblTap)
         view.addGestureRecognizer(tap)
         view.addGestureRecognizer(pan)
         view.addGestureRecognizer(pinch)
@@ -3014,9 +3581,44 @@ struct Chess3DContainer: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(gm: gm) }
 
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, SCNSceneRendererDelegate, SCNPhysicsContactDelegate {
         let gm: GameManager
+        private var isDraggingPiece = false
+        private var lastDragLocal: SCNVector3? = nil
+        private var lastDragTime: TimeInterval = 0
+        private var dragVelocityLocal = SCNVector3Zero
+        private var lastClackTime: TimeInterval = 0
+
         init(gm: GameManager) { self.gm = gm }
+
+        func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
+            gm.space.updateFrame(atTime: time)
+            if gm.controlMode == .drag {
+                gm.boardCtl.updateDraggedPiecePhysics()
+            }
+        }
+
+        func physicsWorld(_ world: SCNPhysicsWorld, didBegin contact: SCNPhysicsContact) {
+            guard contact.collisionImpulse > 0.7 else { return }
+            let now = Date().timeIntervalSinceReferenceDate
+            if now - lastClackTime < 0.08 { return }
+            lastClackTime = now
+            SoundEngine.shared.play("click", enabled: gm.sfxEnabled)
+        }
+
+        private func rayBoardPoint(_ view: SCNView, screenPoint: CGPoint, yPlane: Float) -> SCNVector3? {
+            let p0 = view.unprojectPoint(SCNVector3(Float(screenPoint.x), Float(screenPoint.y), 0))
+            let p1 = view.unprojectPoint(SCNVector3(Float(screenPoint.x), Float(screenPoint.y), 1))
+            let o = gm.boardCtl.root.convertPosition(p0, from: nil)
+            let f = gm.boardCtl.root.convertPosition(p1, from: nil)
+            let dy = f.y - o.y
+            guard abs(dy) > 0.001 else { return nil }
+            let t = (yPlane - o.y) / dy
+            guard t > 0 else { return nil }
+            let lx = min(7.0, max(-7.0, o.x + (f.x - o.x) * t))
+            let lz = min(7.0, max(-7.0, o.z + (f.z - o.z) * t))
+            return SCNVector3(lx, yPlane, lz)
+        }
 
         @objc func handleTap(_ g: UITapGestureRecognizer) {
             guard let view = g.view as? SCNView else { return }
@@ -3030,11 +3632,84 @@ struct Chess3DContainer: UIViewRepresentable {
             }
         }
 
+        @objc func handleDoubleTap(_ g: UITapGestureRecognizer) {
+            guard gm.controlMode == .drag, let view = g.view as? SCNView else { return }
+            let p = g.location(in: view)
+            let hits = view.hitTest(p, options: [SCNHitTestOption.searchMode: SCNHitTestSearchMode.all.rawValue])
+            for h in hits {
+                if let name = h.node.name ?? h.node.parent?.name, name.hasPrefix("pc_"),
+                   let s = Int(name.dropFirst(3)) {
+                    let camW = gm.space.cameraNode.presentation.worldPosition
+                    let hitW = h.worldCoordinates
+                    let dirW = SCNVector3(hitW.x - camW.x, 0, hitW.z - camW.z)
+                    let dirLocal = gm.boardCtl.root.convertVector(dirW, from: nil)
+                    gm.knockOverPiece(at: s, viewDir: dirLocal)
+                    return
+                }
+                if let s = BoardController.squareIndex(from: h.node) {
+                    let camW = gm.space.cameraNode.presentation.worldPosition
+                    let hitW = h.worldCoordinates
+                    let dirLocal = gm.boardCtl.root.convertVector(SCNVector3(hitW.x - camW.x, 0, hitW.z - camW.z), from: nil)
+                    gm.knockOverPiece(at: s, viewDir: dirLocal)
+                    return
+                }
+            }
+        }
+
         @objc func handlePan(_ g: UIPanGestureRecognizer) {
-            guard let view = g.view else { return }
-            let t = g.translation(in: view)
-            gm.space.pan(dx: t.x, dy: t.y)
-            g.setTranslation(CGPoint.zero, in: view)
+            guard let view = g.view as? SCNView else { return }
+            let p = g.location(in: view)
+            switch g.state {
+            case .began:
+                isDraggingPiece = false
+                lastDragLocal = nil
+                dragVelocityLocal = SCNVector3Zero
+                if gm.controlMode == .drag {
+                    let hits = view.hitTest(p, options: [SCNHitTestOption.searchMode: SCNHitTestSearchMode.all.rawValue])
+                    for h in hits {
+                        if let s = BoardController.squareIndex(from: h.node),
+                           let pt = rayBoardPoint(view, screenPoint: p, yPlane: 0.58) {
+                            if gm.beginPieceDrag(square: s, atLocal: pt) {
+                                isDraggingPiece = true
+                                lastDragLocal = pt
+                                lastDragTime = Date().timeIntervalSinceReferenceDate
+                                return
+                            }
+                        }
+                    }
+                }
+                let t = g.translation(in: view)
+                gm.space.pan(dx: t.x, dy: t.y)
+                g.setTranslation(.zero, in: view)
+
+            case .changed:
+                if isDraggingPiece {
+                    if let pt = rayBoardPoint(view, screenPoint: p, yPlane: 0.58) {
+                        let now = Date().timeIntervalSinceReferenceDate
+                        let dt = Float(max(0.008, now - lastDragTime))
+                        if let prev = lastDragLocal {
+                            dragVelocityLocal = SCNVector3((pt.x - prev.x) / dt, 0, (pt.z - prev.z) / dt)
+                        }
+                        lastDragLocal = pt
+                        lastDragTime = now
+                        gm.updatePieceDrag(toLocal: pt)
+                    }
+                } else {
+                    let t = g.translation(in: view)
+                    gm.space.pan(dx: t.x, dy: t.y)
+                    g.setTranslation(.zero, in: view)
+                }
+
+            case .ended, .cancelled:
+                if isDraggingPiece {
+                    isDraggingPiece = false
+                    let pt = rayBoardPoint(view, screenPoint: p, yPlane: 0.58) ?? lastDragLocal
+                    let worldVel = gm.boardCtl.root.convertVector(dragVelocityLocal, to: nil)
+                    gm.endPieceDrag(atLocal: pt, releaseVelocity: worldVel)
+                }
+            default:
+                break
+            }
         }
 
         @objc func handlePinch(_ g: UIPinchGestureRecognizer) {
@@ -3240,6 +3915,12 @@ struct MainMenuOverlay: View {
                 .pickerStyle(.segmented)
             }
 
+            caption("УПРАВЛЕНИЕ ФИГУРАМИ:")
+            Picker("", selection: $gm.controlMode) {
+                ForEach(ControlMode.allCases) { c in Text(c.rawValue).tag(c) }
+            }
+            .pickerStyle(.segmented)
+
             HStack {
                 caption("КОНТРОЛЬ ВРЕМЕНИ:")
                 Spacer()
@@ -3343,7 +4024,7 @@ struct GameHUDOverlay: View {
 
             Spacer()
 
-            HStack {
+            HStack(spacing: 8) {
                 Button(action: { gm.performUndo() }) {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.uturn.backward")
@@ -3351,11 +4032,35 @@ struct GameHUDOverlay: View {
                     }
                     .font(mono(11))
                     .foregroundColor(.yellow)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 8)
                     .glass(10)
                     .opacity(gm.undoCount > 0 ? 1.0 : 0.4)
                 }
+
+                if !gm.isARMode {
+                    Button(action: { gm.toggleControlMode() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: gm.controlMode == .drag ? "hand.raised.fill" : "hand.tap.fill")
+                            Text(gm.controlMode == .drag ? "Физика" : "Тап")
+                        }
+                        .font(mono(11))
+                        .foregroundColor(gm.controlMode == .drag ? .orange : .white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .glass(10)
+                    }
+                    if gm.controlMode == .drag {
+                        Button(action: { gm.realignPhysicsPieces() }) {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(mono(12))
+                                .foregroundColor(.green)
+                                .padding(8)
+                                .glass(10)
+                        }
+                    }
+                }
+
                 Spacer()
                 Text(gm.lastMoveNotation)
                     .font(mono(12))
@@ -3364,7 +4069,7 @@ struct GameHUDOverlay: View {
                     .padding(.vertical, 8)
                     .glass(10)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 14)
             .padding(.bottom, 28)
         }
     }
@@ -3415,287 +4120,4 @@ struct PromotionOverlay: View {
         ZStack {
             Color.black.opacity(0.6).ignoresSafeArea()
             VStack(spacing: 14) {
-                Text("ПРЕВРАЩЕНИЕ ПЕШКИ")
-                    .font(mono(14))
-                    .foregroundColor(.white)
-                HStack(spacing: 10) {
-                    promoButton("♕", "Ферзь", 5)
-                    promoButton("♖", "Ладья", 4)
-                    promoButton("♗", "Слон", 3)
-                    promoButton("♘", "Конь", 2)
-                }
-                Button("Отмена") { gm.cancelPromotion() }
-                    .font(mono(12))
-                    .foregroundColor(.white.opacity(0.7))
-            }
-            .padding(22)
-            .glass(22)
-        }
-    }
-
-    private func promoButton(_ glyph: String, _ name: String, _ type: Int) -> some View {
-        Button(action: { gm.choosePromotion(type) }) {
-            VStack(spacing: 4) {
-                Text(glyph).font(.system(size: 38))
-                Text(name).font(mono(10))
-            }
-            .foregroundColor(.white)
-            .frame(width: 66, height: 78)
-            .background(Color.cyan.opacity(0.25))
-            .cornerRadius(12)
-        }
-    }
-}
-
-struct GameOverOverlay: View {
-    @ObservedObject var gm: GameManager
-    @State private var hidden = false
-
-    var body: some View {
-        Group {
-            if !hidden {
-                ZStack {
-                    Color.black.opacity(0.55).ignoresSafeArea()
-                    VStack(spacing: 14) {
-                        Text("ПАРТИЯ ОКОНЧЕНА")
-                            .font(mono(13))
-                            .foregroundColor(.white.opacity(0.7))
-                        Text(gm.gameResult?.title ?? "")
-                            .font(mono(20, .black))
-                            .foregroundColor(.cyan)
-                            .multilineTextAlignment(.center)
-                        Button(action: { gm.restartGame() }) {
-                            Text("РЕВАНШ")
-                                .font(mono(14))
-                                .foregroundColor(.black)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                                .background(Color.cyan)
-                                .cornerRadius(12)
-                        }
-                        Button(action: { hidden = true }) {
-                            Text("Осмотреть доску").font(mono(12)).foregroundColor(.white)
-                        }
-                        Button(action: { gm.exitToMenu() }) {
-                            Text("В главное меню").font(mono(12)).foregroundColor(.red)
-                        }
-                    }
-                    .padding(24)
-                    .glass(22)
-                    .padding(.horizontal, 30)
-                }
-            }
-        }
-    }
-}
-
-struct PauseMenuOverlay: View {
-    @ObservedObject var gm: GameManager
-    @Binding var showSaves: Bool
-    @Binding var showSettings: Bool
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.75).ignoresSafeArea()
-            VStack(spacing: 14) {
-                Text("ПАУЗА").font(mono(26, .black)).foregroundColor(.white)
-                Button("Продолжить") { gm.resumeGame() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.cyan)
-                Button("Настройки") { showSettings = true }
-                    .buttonStyle(.bordered)
-                Button("Сохранить партию") { showSaves = true }
-                    .buttonStyle(.bordered)
-                Button("Новая партия") {
-                    gm.isPaused = false
-                    gm.restartGame()
-                }
-                .buttonStyle(.bordered)
-                Button("Выход в главное меню") { gm.exitToMenu() }
-                    .foregroundColor(.red)
-            }
-            .padding(26)
-            .glass(20)
-        }
-    }
-}
-
-struct AIChatModalView: View {
-    @ObservedObject var gm: GameManager
-    @Environment(\.dismiss) var dismiss
-    @State private var input = ""
-
-    var body: some View {
-        NavigationStack {
-            VStack {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ForEach(gm.chat) { msg in
-                                bubble(msg).id(msg.id)
-                            }
-                        }
-                        .padding()
-                    }
-                    .onChange(of: gm.chat.count) { _ in
-                        if let last = gm.chat.last {
-                            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
-                        }
-                    }
-                }
-                Divider()
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        Button("🧠 Лучший ход?") { gm.sendUserMessage("Какой ход лучший?") }
-                            .buttonStyle(.bordered)
-                            .tint(.cyan)
-                        Button("⚖️ Оцени позицию") { gm.sendUserMessage("Оцени шансы") }
-                            .buttonStyle(.bordered)
-                            .tint(.cyan)
-                    }
-                    .padding(.horizontal)
-                }
-                HStack {
-                    TextField("Сообщение ИИ...", text: $input)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { send() }
-                    Button(action: { send() }) {
-                        Image(systemName: "arrow.up.circle.fill").font(.title2).foregroundColor(.cyan)
-                    }
-                }
-                .padding(.horizontal)
-                .padding(.bottom, 10)
-                .padding(.top, 4)
-            }
-            .navigationTitle("AI Каспаров-9000")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Закрыть") { dismiss() }
-                }
-            }
-        }
-    }
-
-    private func send() {
-        gm.sendUserMessage(input)
-        input = ""
-    }
-
-    @ViewBuilder private func bubble(_ msg: ChatMessage) -> some View {
-        if msg.sender == "Ты" {
-            HStack {
-                Spacer()
-                VStack(alignment: .trailing) {
-                    Text(msg.sender).font(.caption2).foregroundColor(.gray)
-                    Text(msg.text).padding(10).background(Color.cyan.opacity(0.3)).cornerRadius(12)
-                }
-            }
-        } else {
-            HStack {
-                VStack(alignment: .leading) {
-                    Text(msg.sender).font(.caption2).foregroundColor(.gray)
-                    Text(msg.text).padding(10).background(Color.gray.opacity(0.2)).cornerRadius(12)
-                }
-                Spacer()
-            }
-        }
-    }
-}
-
-struct SettingsModalView: View {
-    @ObservedObject var gm: GameManager
-    @Environment(\.dismiss) var dismiss
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section(header: Text("Звук и музыка")) {
-                    Toggle("Звуковые эффекты", isOn: $gm.sfxEnabled)
-                    Toggle("Фоновая музыка космоса", isOn: $gm.musicEnabled)
-                    Toggle("Голос комментатора", isOn: $gm.voiceEnabled)
-                }
-                Section(header: Text("Графика")) {
-                    Picker("Качество", selection: $gm.graphicsQuality) {
-                        ForEach(GraphicsQuality.allCases) { q in Text(q.rawValue).tag(q) }
-                    }
-                    .pickerStyle(.segmented)
-                    Text("Ультра: лучи света, тени 4K, мягкое затенение. Если игра тормозит, выбери «Высокое» или «Стандарт».")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Section(header: Text("Игра")) {
-                    Toggle("Подсвечивать доступные ходы", isOn: $gm.showHints)
-                    Picker("Сложность бота", selection: $gm.difficulty) {
-                        ForEach(BotDifficulty.allCases) { d in Text(d.rawValue).tag(d) }
-                    }
-                }
-            }
-            .navigationTitle("Настройки")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Готово") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
-struct SavesModalView: View {
-    @ObservedObject var gm: GameManager
-    @Environment(\.dismiss) var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List {
-                if !gm.inMenu {
-                    Section("Сохранить партию") {
-                        ForEach(1...3, id: \.self) { num in
-                            Button("Сохранить в слот #\(num)") {
-                                gm.saveToSlot(slotId: "slot_\(num)", title: "Слот #\(num)")
-                                dismiss()
-                            }
-                        }
-                    }
-                }
-                Section("Загрузить партию") {
-                    if gm.saveSlots.isEmpty {
-                        Text("Нет сохранений").foregroundColor(.secondary)
-                    } else {
-                        ForEach(gm.saveSlots) { slot in
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(slot.title).font(.headline)
-                                    Text("\(slot.dateString) • Ход \(slot.board.fullmove)")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                Spacer()
-                                Button("Загрузить") {
-                                    gm.loadFromSlot(slot)
-                                    dismiss()
-                                }
-                                .buttonStyle(.borderedProminent)
-                            }
-                            .swipeActions {
-                                Button(role: .destructive) {
-                                    gm.deleteSlot(slot.id)
-                                } label: {
-                                    Label("Удалить", systemImage: "trash")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Слоты сохранений")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Закрыть") { dismiss() }
-                }
-            }
-        }
-    }
-}
+                Text("
