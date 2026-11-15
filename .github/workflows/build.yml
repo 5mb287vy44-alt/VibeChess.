@@ -359,23 +359,23 @@ jobs:
               n2 = fbm(U, V, 5, 3, 6, 211)
               n3 = fbm(U, V, 4, 2, 5, 221)
               n4 = fbm(U, V, 7, 4, 5, 241)
-              neb1 = np.clip((n1 - 0.38) * 2.5, 0, 1) ** 1.5
-              neb2 = np.clip((n2 - 0.44) * 2.6, 0, 1) ** 1.6
-              neb3 = np.clip((n3 - 0.46) * 2.8, 0, 1) ** 1.7
-              neb4 = np.clip((n4 - 0.48) * 2.6, 0, 1) ** 1.6
+              neb1 = np.clip((n1 - 0.36) * 2.5, 0, 1) ** 1.45
+              neb2 = np.clip((n2 - 0.42) * 2.6, 0, 1) ** 1.55
+              neb3 = np.clip((n3 - 0.44) * 2.8, 0, 1) ** 1.65
+              neb4 = np.clip((n4 - 0.46) * 2.6, 0, 1) ** 1.55
               band_c = 0.5 + 0.14 * np.sin(2 * np.pi * U * 1.0)
-              band = np.exp(-((V - band_c) / 0.12) ** 2)
+              band = np.exp(-((V - band_c) / 0.13) ** 2)
               dust = fbm(U, V, 10, 5, 5, 231)
               col = np.zeros((h, w, 3), dtype=np.float32)
-              col += neb1[..., None] * np.array([0.06, 0.25, 0.46], dtype=np.float32)
-              col += neb2[..., None] * np.array([0.44, 0.10, 0.34], dtype=np.float32)
-              col += neb3[..., None] * np.array([0.36, 0.18, 0.06], dtype=np.float32)
-              col += neb4[..., None] * np.array([0.12, 0.34, 0.36], dtype=np.float32)
-              col += (band * (0.40 + 0.65 * dust))[..., None] * np.array([0.24, 0.20, 0.22], dtype=np.float32)
+              col += neb1[..., None] * np.array([0.07, 0.28, 0.52], dtype=np.float32)
+              col += neb2[..., None] * np.array([0.48, 0.11, 0.38], dtype=np.float32)
+              col += neb3[..., None] * np.array([0.40, 0.20, 0.07], dtype=np.float32)
+              col += neb4[..., None] * np.array([0.14, 0.38, 0.40], dtype=np.float32)
+              col += (band * (0.42 + 0.65 * dust))[..., None] * np.array([0.26, 0.22, 0.24], dtype=np.float32)
               col *= (1 - 0.68 * (band * np.clip((dust - 0.55) * 3, 0, 1)))[..., None]
               col += 0.005
               r = np.random.default_rng(5)
-              count = 20000
+              count = 22000
               sx = r.integers(0, w, count); sy = r.integers(0, h, count)
               br = r.random(count) ** 3.8
               tint = r.random(count)
@@ -390,19 +390,25 @@ jobs:
           def make_env():
               w, h = 1024, 512
               U, V = grid(w, h)
-              top = np.array([0.20, 0.26, 0.40], dtype=np.float32)
-              hor = np.array([0.62, 0.55, 0.46], dtype=np.float32)
-              bot = np.array([0.05, 0.045, 0.05], dtype=np.float32)
+              top = np.array([0.08, 0.14, 0.28], dtype=np.float32)
+              hor = np.array([0.38, 0.32, 0.34], dtype=np.float32)
+              bot = np.array([0.04, 0.05, 0.10], dtype=np.float32)
               t = V[..., None]
               col = np.where(t < 0.5, top + (hor - top) * (t / 0.5), hor + (bot - hor) * ((t - 0.5) / 0.5))
+              neb = fbm(U, V, 5, 3, 4, 291)
+              col += np.clip((neb - 0.45) * 2.5, 0, 1)[..., None] * np.array([0.16, 0.32, 0.55], dtype=np.float32)
               def box(u0, u1, v0, v1, color, soft=0.02):
                   m = smooth(u0 - soft, u0 + soft, U) * (1 - smooth(u1 - soft, u1 + soft, U))
                   m *= smooth(v0 - soft, v0 + soft, V) * (1 - smooth(v1 - soft, v1 + soft, V))
                   return m[..., None] * np.array(color, dtype=np.float32)
-              col = col + box(0.10, 0.24, 0.12, 0.38, (1.2, 1.15, 1.05))
-              col = col + box(0.60, 0.76, 0.08, 0.32, (1.3, 1.0, 0.7))
-              col = col + box(0.42, 0.45, 0.10, 0.62, (0.8, 0.9, 1.2))
-              col = col + box(0.86, 0.93, 0.18, 0.40, (0.7, 0.8, 1.1))
+              def spot(uc, vc, ru, rv, color):
+                  d = ((U - uc) / ru) ** 2 + ((V - vc) / rv) ** 2
+                  return np.exp(-d)[..., None] * np.array(color, dtype=np.float32)
+              col = col + spot(0.50, 0.30, 0.09, 0.12, (2.2, 1.85, 1.35))
+              col = col + box(0.10, 0.24, 0.12, 0.38, (1.1, 1.15, 1.25))
+              col = col + box(0.66, 0.80, 0.10, 0.34, (1.35, 1.0, 0.72))
+              col = col + box(0.36, 0.41, 0.08, 0.55, (0.65, 0.92, 1.3))
+              col = col + box(0.86, 0.94, 0.16, 0.44, (0.85, 0.65, 1.25))
               save_png(out("env_studio.png"), u8(np.clip(col, 0, 1)))
 
           def rgba_additive(rgb, alpha):
@@ -486,23 +492,28 @@ jobs:
               Y = (V - 0.5) * 2
               R = np.sqrt(X * X + Y * Y)
               A = np.arctan2(Y, X)
-              turb = fbm(U, V, 6, 6, 4, 307)
-              spiral1 = 0.5 + 0.5 * np.sin(3 * A + 14.0 * np.log(np.maximum(R, 0.12)) + 2.8 * turb)
-              spiral2 = 0.5 + 0.5 * np.sin(5 * A + 22.0 * np.log(np.maximum(R, 0.12)) - 1.8 * turb)
-              swirl = 0.65 * spiral1 + 0.35 * spiral2
-              inner_cut = smooth(0.30, 0.35, R)
-              outer_fade = (1 - smooth(0.55, 0.98, R)) ** 1.3
-              ring_hot = np.exp(-((R - 0.38) / 0.055) ** 2)
-              alpha = np.clip((0.25 + 0.75 * swirl) * inner_cut * outer_fade + 0.75 * ring_hot * inner_cut, 0, 1)
-              t_col = np.clip((R - 0.34) / 0.52, 0, 1)
-              col = mix((255, 232, 175), (255, 118, 28), smooth(0.0, 0.45, t_col))
-              col = mix(col, (148, 42, 215), smooth(0.42, 1.0, t_col))
+              turb = fbm(U, V, 6, 6, 5, 307)
+              spiral1 = 0.5 + 0.5 * np.sin(3 * A + 16.0 * np.log(np.maximum(R, 0.12)) + 3.2 * turb)
+              spiral2 = 0.5 + 0.5 * np.sin(7 * A + 26.0 * np.log(np.maximum(R, 0.12)) - 2.2 * turb)
+              spiral3 = 0.5 + 0.5 * np.sin(11 * A + 34.0 * np.log(np.maximum(R, 0.12)) + 1.5 * turb)
+              swirl = 0.45 * spiral1 + 0.35 * spiral2 + 0.20 * spiral3
+              inner_cut = smooth(0.32, 0.36, R)
+              outer_fade = (1 - smooth(0.52, 0.98, R)) ** 1.25
+              isco_hot = np.exp(-((R - 0.38) / 0.038) ** 2)
+              doppler = 0.85 + 0.28 * np.cos(A - 0.4)
+              alpha = np.clip(((0.22 + 0.85 * swirl) * inner_cut * outer_fade + 0.90 * isco_hot * inner_cut) * doppler, 0, 1)
+              t_col = np.clip((R - 0.35) / 0.54, 0, 1)
+              col = mix((255, 248, 225), (255, 138, 35), smooth(0.0, 0.36, t_col))
+              col = mix(col, (165, 45, 225), smooth(0.36, 0.85, t_col))
+              col = mix(col, (65, 20, 140), smooth(0.80, 1.0, t_col))
               save_png(out("fx_blackhole_disk.png"), rgba_map(col, alpha))
 
-              photon = np.exp(-((R - 0.375) / 0.025) ** 2) * 0.95
-              lens = np.exp(-((R - 0.48) / 0.08) ** 2) * (0.28 + 0.20 * np.cos(2 * A + 0.6))
-              ring_alpha = np.clip((photon + lens) * smooth(0.32, 0.35, R) * (1 - smooth(0.85, 1.0, R)), 0, 1)
-              ring_col = mix((185, 110, 255), (255, 238, 195), np.clip(photon * 1.3, 0, 1))
+              photon = np.exp(-((R - 0.365) / 0.020) ** 2) * 1.0
+              arc_top = np.exp(-((R - 0.45) / 0.055) ** 2) * np.clip(0.5 + 0.5 * np.sin(A), 0, 1)
+              lens = np.exp(-((R - 0.49) / 0.075) ** 2) * (0.28 + 0.25 * np.cos(2 * A + 0.5))
+              doppler_r = 0.85 + 0.30 * np.cos(A - 0.3)
+              ring_alpha = np.clip((photon + 0.7 * arc_top + lens) * smooth(0.33, 0.355, R) * (1 - smooth(0.84, 1.0, R)) * doppler_r, 0, 1)
+              ring_col = mix((195, 115, 255), (255, 246, 215), np.clip(photon * 1.25, 0, 1))
               save_png(out("fx_blackhole_ring.png"), rgba_map(ring_col, ring_alpha))
 
           def make_nebulae():
@@ -514,14 +525,16 @@ jobs:
                   R = np.sqrt(X * X + Y * Y)
                   w1 = fbm(U, V, 3, 3, 5, seed)
                   w2 = fbm(U, V, 6, 6, 4, seed + 13)
-                  wisp = np.clip((0.65 * w1 + 0.35 * w2 - 0.30) * 2.1, 0, 1) ** 1.35
-                  fall = (1 - smooth(0.18, 0.98, R)) ** 1.5
-                  alpha = np.clip(wisp * fall * 0.85, 0, 1)
-                  col = mix(c_out, c_in, np.clip(wisp * fall * 1.35, 0, 1))
+                  wisp = np.clip((0.65 * w1 + 0.35 * w2 - 0.28) * 2.15, 0, 1) ** 1.3
+                  fall = (1 - smooth(0.16, 0.98, R)) ** 1.45
+                  alpha = np.clip(wisp * fall * 0.88, 0, 1)
+                  col = mix(c_out, c_in, np.clip(wisp * fall * 1.38, 0, 1))
                   save_png(out(filename), rgba_map(col, alpha))
               make_neb("fx_nebula_cyan.png", (125, 235, 255), (20, 95, 210), 401)
               make_neb("fx_nebula_purple.png", (255, 140, 235), (110, 30, 195), 419)
               make_neb("fx_nebula_gold.png", (255, 215, 130), (195, 75, 40), 437)
+              make_neb("fx_nebula_emerald.png", (135, 255, 210), (18, 125, 118), 457)
+              make_neb("fx_nebula_crimson.png", (255, 155, 175), (175, 32, 86), 479)
 
           def make_comet_fx():
               w, h = 512, 128
@@ -534,6 +547,21 @@ jobs:
               alpha = np.clip(core * fade * 0.95, 0, 1)
               col = mix((115, 200, 255), (245, 252, 255), np.clip(core * (1 - X * 0.55), 0, 1))
               save_png(out("fx_comet_tail.png"), rgba_map(col, alpha))
+
+          def make_explosion_fx():
+              s = 256
+              U, V = grid(s, s)
+              X = (U - 0.5) * 2
+              Y = (V - 0.5) * 2
+              R = np.sqrt(X * X + Y * Y)
+              sw = np.exp(-((R - 0.76) / 0.065) ** 2) * (1 - smooth(0.88, 0.99, R))
+              sw += 0.35 * np.exp(-((R - 0.64) / 0.10) ** 2)
+              sw_col = mix((255, 130, 45), (255, 244, 210), np.clip(sw * 1.2, 0, 1))
+              save_png(out("fx_shockwave.png"), rgba_map(sw_col, np.clip(sw, 0, 1)))
+
+              fl = np.exp(-((R - 0.84) / 0.04) ** 2) * 0.55 * (1 - smooth(0.92, 1.0, R))
+              fl_col = mix((120, 200, 255), (255, 220, 175), np.clip(0.5 + 0.5 * X, 0, 1))
+              save_png(out("fx_flare_ring.png"), rgba_map(fl_col, np.clip(fl, 0, 1)))
 
           def make_icon():
               s = 1024
@@ -577,7 +605,7 @@ jobs:
                      lambda: make_rock("mars", (95, 40, 24), (210, 118, 72), 90, 61),
                      lambda: make_rock("moon", (70, 70, 72), (200, 198, 192), 160, 131),
                      make_jupiter, make_saturn, make_uranus, make_neptune, make_pluto, make_asteroid,
-                     make_sun, make_sky, make_env, make_fx, make_blackhole_fx, make_nebulae, make_comet_fx, make_icon):
+                     make_sun, make_sky, make_env, make_fx, make_blackhole_fx, make_nebulae, make_comet_fx, make_explosion_fx, make_icon):
               fn()
               print("visual ok", round(time.time() - t0, 1), "s")
 
@@ -883,12 +911,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="v5.0.${{ github.run_number }}"
+          VERSION="v6.0.${{ github.run_number }}"
           gh release create "$VERSION" VibeChess.ipa \
-            --title "VibeChess $VERSION (full Solar System)" \
-            --notes "Версия 5.0:
-            - Полная Солнечная система: все 8 планет, Плутон, Церера, спутники, кольца, комета, пояс астероидов и пояс Койпера
-            - Планеты, спутники, доска, звёзды и туманности вращаются вокруг Солнца и своих осей
-            - Объёмные многослойные туманности космоса
-            - Чёрная дыра из-под клетки при взятии фигуры
-            - Обновлённая космическая музыка и звуковые эффекты"
+            --title "VibeChess $VERSION (AAA RTX Shaders + Physics)" \
+            --notes "Версия 6.0:
+            - AAA графика: Metal-шейдеры, PBR ClearCoat лакировка, HDR-адаптация, TAA, Depth of Field боке
+            - Живые космические события: периодические взрывы и столкновения метеоритов с ударными волнами
+            - Реалистичная чёрная дыра с фотонным кольцом, гравитационным линзированием и спагеттификацией фигуры
+            - Два режима управления фигурами: Нажатие и Руками (3D-физика с перетаскиванием и опрокидыванием фигур)
+            - Управление камерой гироскопом в настройках
+            - 5-слойные объёмные туманности и вся Солнечная система 1 в 1"
